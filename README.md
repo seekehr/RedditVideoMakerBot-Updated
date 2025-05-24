@@ -7,6 +7,8 @@
 - [x] Fixed the issue with generating text (and other, many small bugfixes during video generation with storymode)
 - [x] Other many small bugfixes
 
+**Example video:** https://www.youtube.com/shorts/lT-ygJzz0A0
+--------------------------------------------
 All done WITHOUT video editing or asset compiling. Just pure ✨programming magic✨.
 
 Created by Lewis Menelaws & [TMRRW](https://tmrrwinc.ca)
