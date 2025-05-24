@@ -22,7 +22,7 @@ def load_background_options():
     # Load background audios
     with open("./utils/background_audios.json") as json_file:
         background_options["audio"] = json.load(json_file)
-
+        
     # Remove "__comment" from backgrounds
     del background_options["video"]["__comment"]
     del background_options["audio"]["__comment"]

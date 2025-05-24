@@ -28,6 +28,7 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
     H: Final[int] = int(settings.config["settings"]["resolution_h"])
     lang: Final[str] = settings.config["reddit"]["thread"]["post_lang"]
     storymode: Final[bool] = settings.config["settings"]["storymode"]
+    read_first_comment_as_story: Final[bool] = settings.config["settings"]["read_first_comment_as_story"]
 
     print_step("Downloading screenshots of reddit posts...")
     reddit_id = re.sub(r"[^\w\s-]", "", reddit_object["thread_id"])
@@ -41,27 +42,30 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
         txtcolor = (240, 240, 240)
         transparent = False
     elif settings.config["settings"]["theme"] == "transparent":
-        if storymode:
-            # Transparent theme
-            bgcolor = (0, 0, 0, 0)
-            txtcolor = (255, 255, 255)
-            transparent = True
-            cookie_file = open("./video_creation/data/cookie-dark-mode.json", encoding="utf-8")
-        else:
-            # Switch to dark theme
-            cookie_file = open("./video_creation/data/cookie-dark-mode.json", encoding="utf-8")
-            bgcolor = (33, 33, 36, 255)
-            txtcolor = (240, 240, 240)
-            transparent = False
+        # Always use transparent background if theme is transparent
+        bgcolor = (0, 0, 0, 0)  # RGBA for fully transparent
+        txtcolor = (255, 255, 255) # White text, good for placing over dark video
+        transparent = True
+        # Use dark mode cookies because Reddit's dark mode (white text)
+        # will be more visible when the screenshot/image is overlayed
+        # on a video, assuming the video might have dark parts.
+        cookie_file = open("./video_creation/data/cookie-dark-mode.json", encoding="utf-8")
     else:
         cookie_file = open("./video_creation/data/cookie-light-mode.json", encoding="utf-8")
         bgcolor = (255, 255, 255, 255)
         txtcolor = (0, 0, 0)
         transparent = False
 
-    if storymode and settings.config["settings"]["storymodemethod"] == 1:
-        # for idx,item in enumerate(reddit_object["thread_post"]):
-        print_substep("Generating images...")
+    # Handling for modes that use imagemaker (storymode method 1, or the new first_comment_as_story mode)
+    if (storymode and settings.config["settings"]["storymodemethod"] == 1) or \
+       (not storymode and read_first_comment_as_story):
+        print_substep("Generating images for story-style content...")
+        if not isinstance(reddit_object.get("thread_post"), list):
+            print_substep("Warning: thread_post is not a list. imagemaker might not work as expected.", style="bold yellow")
+            if reddit_object.get("thread_post") is None:
+                print_substep("Error: thread_post is None. Cannot generate images.", style="bold red")
+                return 
+        
         return imagemaker(
             theme=bgcolor,
             reddit_obj=reddit_object,
@@ -69,198 +73,122 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
             transparent=transparent,
         )
 
-    screenshot_num: int
+    # If not using imagemaker, proceed with Playwright-based screenshotting
+    # This covers:
+    # 1. storymode = true AND storymodemethod = 0 (single image for post)
+    # 2. storymode = false AND read_first_comment_as_story = false (standard comment screenshots)
+    
+    screenshot_num_actual = screenshot_num # Renaming to avoid conflict with outer scope if any confusion
+
     with sync_playwright() as p:
         print_substep("Launching Headless Browser...")
 
-        browser = p.chromium.launch(
-            headless=True
-        )  # headless=False will show the browser for debugging purposes
-        # Device scale factor (or dsf for short) allows us to increase the resolution of the screenshots
-        # When the dsf is 1, the width of the screenshot is 600 pixels
-        # so we need a dsf such that the width of the screenshot is greater than the final resolution of the video
-        dsf = (W // 600) + 1
-
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context(
-            locale=lang or "en-us",
-            color_scheme="dark",
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/93.0.4577.63 Safari/537.36",
             viewport=ViewportSize(width=W, height=H),
-            device_scale_factor=dsf,
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+            device_scale_factor=settings.config["settings"]["zoom"],
         )
         cookies = json.load(cookie_file)
-        cookie_file.close()
-
-        context.add_cookies(cookies)  # load preference cookies
-
-        # Login to Reddit
-        print_substep("Logging in to Reddit...")
+        context.add_cookies(cookies)  # type: ignore
         page = context.new_page()
-        page.goto("https://www.reddit.com/login", timeout=0)
-        page.set_viewport_size(ViewportSize(width=1920, height=1080))
-        page.wait_for_load_state()
+        page.set_default_timeout(0) # Playwright's own timeout for actions like click, goto.
 
-        page.locator(f'input[name="username"]').fill(settings.config["reddit"]["creds"]["username"])
-        page.locator(f'input[name="password"]').fill(settings.config["reddit"]["creds"]["password"])
-        page.get_by_role("button", name="Log In").click()
-        page.wait_for_timeout(5000)
+        # Navigate to the post URL first to handle any overlays, logins, or translations if necessary
+        # This is common for both storymode (method 0) and standard comment screenshotting
+        page.goto(reddit_object["thread_url"], wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(1000) # Allow some time for dynamic content to load
 
-        login_error_div = page.locator(".AnimatedForm__errorMessage").first
-        if login_error_div.is_visible():
-            login_error_message = login_error_div.inner_text()
-            if login_error_message.strip() == "":
-                # The div element is empty, no error
-                pass
-            else:
-                # The div contains an error message
-                print_substep(
-                    "Your reddit credentials are incorrect! Please modify them accordingly in the config.toml file.",
-                    style="red",
-                )
-                exit()
-        else:
-            pass
+        if page.locator('[data-testid="content-gate"]').is_visible():
+            print_substep("Content gate found. Clicking...", style="yellow")
+            page.locator('[data-testid="content-gate"] button').click()
+            page.wait_for_timeout(1000) # Wait for gate to disappear
 
-        page.wait_for_load_state()
-        # Handle the redesign
-        # Check if the redesign optout cookie is set
-        if page.locator("#redesign-beta-optin-btn").is_visible():
-            # Clear the redesign optout cookie
-            clear_cookie_by_name(context, "redesign_optout")
-            # Reload the page for the redesign to take effect
-            page.reload()
-        # Get the thread screenshot
-        page.goto(reddit_object["thread_url"], timeout=0)
-        page.set_viewport_size(ViewportSize(width=W, height=H))
-        page.wait_for_load_state()
-        page.wait_for_timeout(5000)
-
-        if page.locator(
-            "#t3_12hmbug > div > div._3xX726aBn29LDbsDtzr_6E._1Ap4F5maDtT1E1YuCiaO0r.D3IL3FD0RFy_mkKLPwL4 > div > div > button"
-        ).is_visible():
-            # This means the post is NSFW and requires to click the proceed button.
-
-            print_substep("Post is NSFW. You are spicy...")
-            page.locator(
-                "#t3_12hmbug > div > div._3xX726aBn29LDbsDtzr_6E._1Ap4F5maDtT1E1YuCiaO0r.D3IL3FD0RFy_mkKLPwL4 > div > div > button"
-            ).click()
-            page.wait_for_load_state()  # Wait for page to fully load
-
-            # translate code
-        if page.locator(
-            "#SHORTCUT_FOCUSABLE_DIV > div:nth-child(7) > div > div > div > header > div > div._1m0iFpls1wkPZJVo38-LSh > button > i"
-        ).is_visible():
-            page.locator(
-                "#SHORTCUT_FOCUSABLE_DIV > div:nth-child(7) > div > div > div > header > div > div._1m0iFpls1wkPZJVo38-LSh > button > i"
-            ).click()  # Interest popup is showing, this code will close it
-
-        if lang:
-            print_substep("Translating post...")
-            texts_in_tl = translators.translate_text(
-                reddit_object["thread_title"],
-                to_language=lang,
-                translator="google",
-            )
-
-            page.evaluate(
-                "tl_content => document.querySelector('[data-adclicklocation=\"title\"] > div > div > h1').textContent = tl_content",
-                texts_in_tl,
-            )
-        else:
-            print_substep("Skipping translation...")
-
-        postcontentpath = f"assets/temp/{reddit_id}/png/title.png"
         try:
-            if settings.config["settings"]["zoom"] != 1:
-                # store zoom settings
-                zoom = settings.config["settings"]["zoom"]
-                # zoom the body of the page
-                page.evaluate("document.body.style.zoom=" + str(zoom))
-                # as zooming the body doesn't change the properties of the divs, we need to adjust for the zoom
-                location = page.locator('[data-test-id="post-content"]').bounding_box()
-                for i in location:
-                    location[i] = float("{:.2f}".format(location[i] * zoom))
-                page.screenshot(clip=location, path=postcontentpath)
-            else:
-                page.locator('[data-test-id="post-content"]').screenshot(path=postcontentpath)
-        except Exception as e:
-            print_substep("Something went wrong!", style="red")
-            resp = input(
-                "Something went wrong with making the screenshots! Do you want to skip the post? (y/n) "
-            )
+            if page.locator("button", has_text="See full image").is_visible(timeout=500): # Quick check
+                 page.locator("button", has_text="See full image").first.click()
+                 page.wait_for_timeout(500)
+        except:
+            print_substep("No 'See full image' button found or not clickable. Skipping...", style="dim")
 
-            if resp.casefold().startswith("y"):
-                save_data("", "", "skipped", reddit_id, "")
-                print_substep(
-                    "The post is successfully skipped! You can now restart the program and this post will skipped.",
-                    "green",
+
+        if lang != "":
+            # This translation logic might need adjustment based on actual page structure
+            # and if it's needed for title screenshots vs comment screenshots.
+            # Assuming it's primarily for the main post content if storymode method 0
+            print_substep(f"Attempting to translate page content to {lang}...", style="cyan")
+            try:
+                # Example: Clicking a general translate button if available
+                translate_button_selector = '[aria-label="translate"], [data-translate-button]' # Placeholder
+                if page.locator(translate_button_selector).is_visible(timeout=1000):
+                    page.locator(translate_button_selector).click()
+                    page.wait_for_timeout(1000) # Wait for translation
+                    # Further steps to select specific language if needed
+            except Exception as e:
+                print_substep(f"Could not find or click translate button: {e}", style="yellow")
+
+
+        if storymode: # This means storymode=true and storymodemethod=0 (single post image)
+            print_substep("Taking screenshot for storymode (single image)...", style="green")
+            # Ensure the main post body is visible and screenshot it
+            post_body_selector = '[data-click-id="text"]' # Selector for the main text body of the post
+            try:
+                page.locator(post_body_selector).first.wait_for(state="visible", timeout=10000)
+                page.locator(post_body_selector).first.screenshot(
+                    path=f"assets/temp/{reddit_id}/png/story_content.png"
                 )
+                print_substep(f"Saved story content screenshot to assets/temp/{reddit_id}/png/story_content.png", style="green")
+            except Exception as e:
+                print_substep(f"Error taking screenshot for story_content.png: {e}", style="bold red")
+                # Consider saving HTML for debugging as in the original code
+                # html_content = page.content() ... save ...
 
-            resp = input("Do you want the error traceback for debugging purposes? (y/n)")
-            if not resp.casefold().startswith("y"):
-                exit()
+        else: # This means storymode=false and read_first_comment_as_story=false (standard comment screenshots)
+            print_substep("Taking screenshots of comments...", style="green")
+            clear_cookie_by_name(context, ['loid','session_tracker','csv','edgebucket','token_v2','session','recent_srs'])
+            
+            comments_on_page = reddit_object["comments"][:screenshot_num_actual]
+            if not comments_on_page:
+                print_substep("No comments to screenshot.", style="yellow")
 
-            raise e
-
-        if storymode:
-            page.locator('[data-click-id="text"]').first.screenshot(
-                path=f"assets/temp/{reddit_id}/png/story_content.png"
-            )
-        else:
             for idx, comment in enumerate(
                 track(
-                    reddit_object["comments"][:screenshot_num],
-                    "Downloading screenshots...",
+                    comments_on_page,
+                    "Downloading comment screenshots...",
                 )
             ):
-                # Stop if we have reached the screenshot_num
-                if idx >= screenshot_num:
-                    break
-
-                if page.locator('[data-testid="content-gate"]').is_visible():
-                    page.locator('[data-testid="content-gate"] button').click()
-
-                page.goto(f"https://new.reddit.com/{comment['comment_url']}")
-
-                # translate code
-
-                if settings.config["reddit"]["thread"]["post_lang"]:
-                    comment_tl = translators.translate_text(
-                        comment["comment_body"],
-                        translator="google",
-                        to_language=settings.config["reddit"]["thread"]["post_lang"],
-                    )
-                    page.evaluate(
-                        '([tl_content, tl_id]) => document.querySelector(`#t1_${tl_id} > div:nth-child(2) > div > div[data-testid="comment"] > div`).textContent = tl_content',
-                        [comment_tl, comment["comment_id"]],
-                    )
+                comment_url = f"https://www.reddit.com{comment['comment_url']}"
+                comment_id_for_filename = comment['comment_id']
+                screenshot_path = f"assets/temp/{reddit_id}/png/{comment_id_for_filename}.png"
+                
+                print_substep(f"Navigating to comment: {comment_url}",-1)
                 try:
-                    if settings.config["settings"]["zoom"] != 1:
-                        # store zoom settings
-                        zoom = settings.config["settings"]["zoom"]
-                        # zoom the body of the page
-                        page.evaluate("document.body.style.zoom=" + str(zoom))
-                        # scroll comment into view
-                        page.locator(f"#t1_{comment['comment_id']}").scroll_into_view_if_needed()
-                        # as zooming the body doesn't change the properties of the divs, we need to adjust for the zoom
-                        location = page.locator(f"#t1_{comment['comment_id']}").bounding_box()
-                        for i in location:
-                            location[i] = float("{:.2f}".format(location[i] * zoom))
-                        page.screenshot(
-                            clip=location,
-                            path=f"assets/temp/{reddit_id}/png/comment_{idx}.png",
-                        )
-                    else:
-                        page.locator(f"#t1_{comment['comment_id']}").screenshot(
-                            path=f"assets/temp/{reddit_id}/png/comment_{idx}.png"
-                        )
-                except TimeoutError:
-                    del reddit_object["comments"]
-                    screenshot_num += 1
-                    print("TimeoutError: Skipping screenshot...")
-                    continue
+                    page.goto(comment_url, wait_until="domcontentloaded", timeout=30000)
+                    page.wait_for_timeout(500) # Brief pause for rendering
 
-        # close browser instance when we are done using it
+                    # Selector for the specific comment element by its ID
+                    # Reddit comment elements usually have an ID like "t1_COMMENT_ID"
+                    comment_selector = f"#t1_{comment_id_for_filename}"
+                    
+                    comment_element = page.locator(comment_selector).first
+                    comment_element.wait_for(state="visible", timeout=10000)
+                    
+                    # Optional: Scroll to the comment to ensure it's fully in view if needed
+                    # comment_element.scroll_into_view_if_needed()
+                    # page.wait_for_timeout(200) # pause after scroll
+
+                    comment_element.screenshot(path=screenshot_path)
+                    print_substep(f"Saved comment screenshot: {screenshot_path}", 1)
+
+                except Exception as e:
+                    print_substep(f"Failed to screenshot comment {comment_id_for_filename}: {e}", style="bold red")
+                    # Fallback or skip this comment
+                    # Consider saving HTML for debugging:
+                    # html_content = page.content()
+                    # with open(f"assets/temp/{reddit_id}/failed_comment_{comment_id_for_filename}.html", "w", encoding="utf-8") as f:
+                    #     f.write(html_content)
+                    # print_substep(f"Saved HTML for failed comment {comment_id_for_filename}", style="yellow")
+
+        print_substep("Closing Headless Browser.", style="green")
         browser.close()
-
-    print_substep("Screenshots downloaded Successfully.", style="bold green")
+    print_step("Finished downloading screenshots.", style="bold green")

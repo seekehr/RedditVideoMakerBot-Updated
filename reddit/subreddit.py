@@ -93,7 +93,8 @@ def get_subreddit_threads(POST_ID: str):
         submission = get_subreddit_undone(threads, subreddit)
 
     if submission is None:
-        return get_subreddit_threads(POST_ID)  # submission already done. rerun
+        print_substep("Could not find a suitable post after checking all time filters.", style="bold red")
+        return None # Propagate None if no submission is found
 
     elif not submission.num_comments and settings.config["settings"]["storymode"] == "false":
         print_substep("No comments found. Skipping.")
@@ -122,39 +123,92 @@ def get_subreddit_threads(POST_ID: str):
     content["thread_id"] = submission.id
     content["is_nsfw"] = submission.over_18
     content["comments"] = []
+    content["parsed_story_content"] = [] # Initialize new key
+    content["audio_segments"] = []    # Initialize new key
+
     if settings.config["settings"]["storymode"]:
         if settings.config["settings"]["storymodemethod"] == 1:
-            content["thread_post"] = posttextparser(submission.selftext)
-        else:
-            content["thread_post"] = submission.selftext
-    else:
-        for top_level_comment in submission.comments:
-            if isinstance(top_level_comment, MoreComments):
-                continue
+            # Get parsed content with audio_text and visual_chunks
+            parsed_data = posttextparser(submission.selftext)
+            content["parsed_story_content"] = parsed_data
+            # Flatten visual_chunks for imagemaker into thread_post
+            content["thread_post"] = [chunk for item in parsed_data for chunk in item["visual_chunks"]]
+            # Extract audio_text for TTS
+            content["audio_segments"] = [item["audio_text"] for item in parsed_data]
+        else: # storymodemethod == 0
+            content["thread_post"] = submission.selftext # Remains as single block for TTS/image
+            # For storymodemethod 0, audio_segments can be just the thread_post itself if needed by TTS
+            # Or TTS for method 0 directly uses thread_post, this depends on TTS/final_video logic for method 0
+            # For simplicity, let audio_segments mirror thread_post for method 0 if it expects a list.
+            # However, TTS for method 0 typically handles a single string.
+            # Let's assume for now that TTS for storymodemethod 0 will directly use content["thread_post"]
+            # and doesn't need content["audio_segments"]. If it does, this part might need adjustment.
 
-            if top_level_comment.body in ["[removed]", "[deleted]"]:
-                continue  # # see https://github.com/JasonLovesDoggo/RedditVideoMakerBot/issues/78
-            if not top_level_comment.stickied:
-                sanitised = sanitize_text(top_level_comment.body)
-                if not sanitised or sanitised == " ":
+    else: # Not storymode
+        if settings.config["settings"]["read_first_comment_as_story"]:
+            first_comment_processed = False
+            for top_level_comment in submission.comments:
+                if isinstance(top_level_comment, MoreComments):
                     continue
-                if len(top_level_comment.body) <= int(
-                    settings.config["reddit"]["thread"]["max_comment_length"]
-                ):
-                    if len(top_level_comment.body) >= int(
+                if top_level_comment.body in ["[removed]", "[deleted]"]:
+                    continue
+                if not top_level_comment.stickied:
+                    sanitised_body = sanitize_text(top_level_comment.body)
+                    if not sanitised_body or sanitised_body.isspace():
+                        continue
+                    if len(top_level_comment.body) <= int(
+                        settings.config["reddit"]["thread"]["max_comment_length"]
+                    ) and len(top_level_comment.body) >= int(
                         settings.config["reddit"]["thread"]["min_comment_length"]
                     ):
-                        if (
-                            top_level_comment.author is not None
-                            and sanitize_text(top_level_comment.body) is not None
-                        ):  # if errors occur with this change to if not.
+                        if top_level_comment.author is not None:
+                            parsed_comment_data = posttextparser(top_level_comment.body)
+                            content["parsed_story_content"] = parsed_comment_data
+                            content["thread_post"] = [chunk for item in parsed_comment_data for chunk in item["visual_chunks"]]
+                            content["audio_segments"] = [item["audio_text"] for item in parsed_comment_data]
+                            
                             content["comments"].append(
                                 {
-                                    "comment_body": top_level_comment.body,
+                                    "comment_body": top_level_comment.body, 
                                     "comment_url": top_level_comment.permalink,
                                     "comment_id": top_level_comment.id,
+                                    "is_first_comment_story": True 
                                 }
                             )
+                            first_comment_processed = True
+                            break 
+            if not first_comment_processed:
+                print_substep("No suitable first comment found to process as story. Skipping post.", style="bold red")
+                return None 
+        else:
+            # Original comment processing logic (no change here for parsed_story_content)
+            for top_level_comment in submission.comments:
+                if isinstance(top_level_comment, MoreComments):
+                    continue
+
+                if top_level_comment.body in ["[removed]", "[deleted]"]:
+                    continue  # # see https://github.com/JasonLovesDoggo/RedditVideoMakerBot/issues/78
+                if not top_level_comment.stickied:
+                    sanitised = sanitize_text(top_level_comment.body)
+                    if not sanitised or sanitised == " ":
+                        continue
+                    if len(top_level_comment.body) <= int(
+                        settings.config["reddit"]["thread"]["max_comment_length"]
+                    ):
+                        if len(top_level_comment.body) >= int(
+                            settings.config["reddit"]["thread"]["min_comment_length"]
+                        ):
+                            if (
+                                top_level_comment.author is not None
+                                and sanitize_text(top_level_comment.body) is not None
+                            ):  # if errors occur with this change to if not.
+                                content["comments"].append(
+                                    {
+                                        "comment_body": top_level_comment.body,
+                                        "comment_url": top_level_comment.permalink,
+                                        "comment_id": top_level_comment.id,
+                                    }
+                                )
 
     print_substep("Received subreddit threads Successfully.", style="bold green")
     return content

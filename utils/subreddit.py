@@ -80,8 +80,9 @@ def get_subreddit_undone(submissions: list, subreddit, times_checked=0, similari
         "all",
     ]  # set doesn't have __getitem__
     index = times_checked + 1
-    if index == len(VALID_TIME_FILTERS):
-        print("All submissions have been done.")
+    if index >= len(VALID_TIME_FILTERS):
+        print("All submissions have been done. No suitable post found after checking all time filters.")
+        return None
 
     return get_subreddit_undone(
         subreddit.top(

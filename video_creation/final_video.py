@@ -203,6 +203,8 @@ def make_final_video(
     H: Final[int] = int(settings.config["settings"]["resolution_h"])
 
     opacity = settings.config["settings"]["opacity"]
+    storymode_enabled: bool = settings.config["settings"]["storymode"]
+    read_first_comment_as_story_enabled: bool = settings.config["settings"]["read_first_comment_as_story"]
 
     reddit_id = re.sub(r"[^\w\s-]", "", reddit_obj["thread_id"])
 
@@ -217,40 +219,61 @@ def make_final_video(
 
     # Gather all audio clips
     audio_clips = list()
-    if number_of_clips == 0 and settings.config["settings"]["storymode"] == "false":
-        print(
-            "No audio clips to gather. Please use a different TTS or post."
-        )  # This is to fix the TypeError: unsupported operand type(s) for +: 'int' and 'NoneType'
-        exit()
-    if settings.config["settings"]["storymode"]:
+    # number_of_clips from TTSEngine now refers to number of primary audio segments (sentences/comments)
+
+    if storymode_enabled:
         if settings.config["settings"]["storymodemethod"] == 0:
-            audio_clips = [ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3")]
-            audio_clips.insert(1, ffmpeg.input(f"assets/temp/{reddit_id}/mp3/postaudio.mp3"))
+            # Storymode Method 0: Title audio + single post audio (postaudio.mp3)
+            audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
+            if exists(f"assets/temp/{reddit_id}/mp3/postaudio.mp3"):
+                audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/postaudio.mp3"))
+            else:
+                print_substep("Warning: postaudio.mp3 not found for storymode method 0.", style="yellow")
+        
         elif settings.config["settings"]["storymodemethod"] == 1:
-            audio_clips = [
-                ffmpeg.input(f"assets/temp/{reddit_id}/mp3/postaudio-{i}.mp3")
-                for i in track(range(number_of_clips + 1), "Collecting the audio files...")
-            ]
-            audio_clips.insert(0, ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
+            # Storymode Method 1: Title audio + multiple audio_segment-N.mp3 files
+            audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
+            num_audio_segments = len(reddit_obj.get("audio_segments", []))
+            for i in range(num_audio_segments):
+                audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/audio_segment-{i}.mp3"))
+
+    elif read_first_comment_as_story_enabled:
+        # Read first comment as story: Title audio + multiple audio_segment-N.mp3 for the first comment
+        audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
+        num_audio_segments_comment = len(reddit_obj.get("audio_segments", [])) # These are sentences of the 1st comment
+        for i in range(num_audio_segments_comment):
+            audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/audio_segment-{i}.mp3"))
+        # Note: The concatenated 0.mp3 for the first comment is used for the main audio track,
+        # but the individual audio_segment-i.mp3 durations are needed for visual timing.
 
     else:
-        audio_clips = [
-            ffmpeg.input(f"assets/temp/{reddit_id}/mp3/{i}.mp3") for i in range(number_of_clips)
-        ]
-        audio_clips.insert(0, ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
+        # Standard comment processing (screenshots, not story-like)
+        # number_of_clips here is actual number of comment mp3s (0.mp3, 1.mp3, ...)
+        if number_of_clips == 0:
+             print("No audio clips to gather for standard mode (number_of_clips is 0).")
+             # exit() or handle as error
+        audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
+        for i in range(number_of_clips): # Assumes 0.mp3, 1.mp3 ... exist
+            audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/{i}.mp3"))
 
-        audio_clips_durations = [
-            float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/{i}.mp3")["format"]["duration"])
-            for i in range(number_of_clips)
-        ]
-        audio_clips_durations.insert(
-            0,
-            float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/title.mp3")["format"]["duration"]),
-        )
-    audio_concat = ffmpeg.concat(*audio_clips, a=1, v=0)
-    ffmpeg.output(
-        audio_concat, f"assets/temp/{reddit_id}/audio.mp3", **{"b:a": "192k"}
-    ).overwrite_output().run(quiet=True)
+    if not audio_clips:
+        print_substep("CRITICAL: No audio clips were gathered. Video generation cannot proceed.", style="bold red")
+        # Consider exiting or raising an error here
+        return # or exit()
+    
+    # Create the main concatenated audio track for the video
+    # For read_first_comment_as_story, TTS already created 0.mp3 which is the full comment audio.
+    # We need to decide if audio_concat should use that, or concat title + audio_segments.
+    # For simplicity and consistency with storymode method 1, let's concat title + audio_segments.
+    # The final audio mix with background music will use this.
+    if audio_clips: # Ensure there are clips before attempting concat
+        audio_concat = ffmpeg.concat(*audio_clips, a=1, v=0)
+        ffmpeg.output(
+            audio_concat, f"assets/temp/{reddit_id}/audio.mp3", **{"b:a": "192k"}
+        ).overwrite_output().run(quiet=True)
+    else:
+        print_substep("No audio clips to concatenate for main audio track.", style="red")
+        # Handle error: perhaps create silent audio of `length`? For now, we might crash later.
 
     console.log(f"[bold green] Video Will Be: {length} Seconds Long")
 
@@ -285,63 +308,158 @@ def make_final_video(
     )
 
     current_time = 0
-    if settings.config["settings"]["storymode"]:
-        audio_clips_durations = [
-            float(
-                ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/postaudio-{i}.mp3")["format"]["duration"]
-            )
-            for i in range(number_of_clips)
-        ]
-        audio_clips_durations.insert(
-            0,
-            float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/title.mp3")["format"]["duration"]),
-        )
-        if settings.config["settings"]["storymodemethod"] == 0:
-            image_clips.insert(
-                1,
-                ffmpeg.input(f"assets/temp/{reddit_id}/png/story_content.png").filter(
-                    "scale", screenshot_width, -1
-                ),
-            )
-            background_clip = background_clip.overlay(
-                image_clips[0],
-                enable=f"between(t,{current_time},{current_time + audio_clips_durations[0]})",
-                x="(main_w-overlay_w)/2",
-                y="(main_h-overlay_h)/2",
-            )
-            current_time += audio_clips_durations[0]
-        elif settings.config["settings"]["storymodemethod"] == 1:
-            for i in track(range(0, number_of_clips + 1), "Collecting the image files..."):
-                image_clips.append(
-                    ffmpeg.input(f"assets/temp/{reddit_id}/png/img{i}.png")["v"].filter(
-                        "scale", screenshot_width, -1
-                    )
-                )
+    # Get title duration first
+    title_audio_duration = float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/title.mp3")["format"]["duration"])
+    background_clip = background_clip.overlay(
+        image_clips[0], # title.png
+        enable=f"between(t,0,{title_audio_duration})",
+        x="(main_w-overlay_w)/2",
+        y="(main_h-overlay_h)/2",
+    )
+    current_time += title_audio_duration
+
+    if storymode_enabled and settings.config["settings"]["storymodemethod"] == 1:
+        parsed_story_content = reddit_obj.get("parsed_story_content", [])
+        global_visual_chunk_idx = 0 # To index into the flat list of all visual chunks (img0.png, img1.png ...)
+        
+        for j, audio_segment_info in enumerate(parsed_story_content):
+            audio_segment_duration = float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/audio_segment-{j}.mp3")["format"]["duration"])
+            visual_chunks_for_this_audio_segment = audio_segment_info.get("visual_chunks", [])
+            num_visual_chunks = len(visual_chunks_for_this_audio_segment)
+
+            if num_visual_chunks == 0: continue # Should not happen if posttextparser is correct
+
+            time_per_visual_chunk = audio_segment_duration / num_visual_chunks
+
+            for vc_idx in range(num_visual_chunks):
+                # Load the corresponding visual chunk image (img0.png, img1.png, ...)
+                # These are already created by imagemaker based on the flat list from content["thread_post"]
+                img_path = f"assets/temp/{reddit_id}/png/img{global_visual_chunk_idx}.png"
+                if not exists(img_path):
+                    print_substep(f"Warning: Visual chunk image not found: {img_path}", style="yellow")
+                    current_time += time_per_visual_chunk # Still advance time
+                    global_visual_chunk_idx += 1
+                    continue
+                
+                # Add to image_clips list if not already (though it might be better to load on demand)
+                # For simplicity, let's assume they are pre-loaded if this path is taken or load them dynamically.
+                # Let's try dynamic loading here for overlay to avoid managing a large image_clips list index for visuals.
+                visual_chunk_image = ffmpeg.input(img_path)["v"].filter("scale", screenshot_width, -1)
+                
+                overlay_start_time = current_time
+                overlay_end_time = current_time + time_per_visual_chunk
+                
+                # Apply opacity filter only if the theme is not transparent
+                # (because if it is, imagemaker already made a transparent BG for the text)
+                processed_visual_chunk_image = visual_chunk_image
+                if settings.config["settings"]["theme"] != "transparent":
+                    processed_visual_chunk_image = visual_chunk_image.filter("colorchannelmixer", aa=opacity)
+
                 background_clip = background_clip.overlay(
-                    image_clips[i],
-                    enable=f"between(t,{current_time},{current_time + audio_clips_durations[i]})",
+                    processed_visual_chunk_image,
+                    enable=f"between(t,{overlay_start_time},{overlay_end_time})",
                     x="(main_w-overlay_w)/2",
                     y="(main_h-overlay_h)/2",
                 )
-                current_time += audio_clips_durations[i]
-    else:
-        for i in range(0, number_of_clips + 1):
-            image_clips.append(
-                ffmpeg.input(f"assets/temp/{reddit_id}/png/comment_{i}.png")["v"].filter(
-                    "scale", screenshot_width, -1
+                current_time = overlay_end_time # Advance current time by the duration of this visual chunk
+                global_visual_chunk_idx += 1
+
+    elif read_first_comment_as_story_enabled:
+        # Similar logic for the first comment being read as a story
+        parsed_story_content = reddit_obj.get("parsed_story_content", []) # This is for the first comment
+        global_visual_chunk_idx = 0 
+
+        for j, audio_segment_info in enumerate(parsed_story_content):
+            # audio_segment-j.mp3 corresponds to the j-th sentence of the first comment
+            audio_segment_duration = float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/audio_segment-{j}.mp3")["format"]["duration"])
+            visual_chunks_for_this_audio_segment = audio_segment_info.get("visual_chunks", [])
+            num_visual_chunks = len(visual_chunks_for_this_audio_segment)
+
+            if num_visual_chunks == 0: continue
+            time_per_visual_chunk = audio_segment_duration / num_visual_chunks
+
+            for vc_idx in range(num_visual_chunks):
+                img_path = f"assets/temp/{reddit_id}/png/img{global_visual_chunk_idx}.png"
+                if not exists(img_path):
+                    print_substep(f"Warning: Visual chunk image not found: {img_path}", style="yellow")
+                    current_time += time_per_visual_chunk
+                    global_visual_chunk_idx += 1
+                    continue
+                
+                visual_chunk_image = ffmpeg.input(img_path)["v"].filter("scale", screenshot_width, -1)
+                overlay_start_time = current_time
+                overlay_end_time = current_time + time_per_visual_chunk
+                
+                processed_visual_chunk_image_comment = visual_chunk_image
+                if settings.config["settings"]["theme"] != "transparent":
+                    processed_visual_chunk_image_comment = visual_chunk_image.filter("colorchannelmixer", aa=opacity)
+
+                background_clip = background_clip.overlay(
+                    processed_visual_chunk_image_comment,
+                    enable=f"between(t,{overlay_start_time},{overlay_end_time})",
+                    x="(main_w-overlay_w)/2",
+                    y="(main_h-overlay_h)/2",
                 )
-            )
-            image_overlay = image_clips[i].filter("colorchannelmixer", aa=opacity)
-            assert (
-                audio_clips_durations is not None
-            ), "Please make a GitHub issue if you see this. Ping @JasonLovesDoggo on GitHub."
+                current_time = overlay_end_time
+                global_visual_chunk_idx += 1
+
+    elif storymode_enabled and settings.config["settings"]["storymodemethod"] == 0:
+        # Storymode Method 0: Single post image (story_content.png) with its audio (postaudio.mp3)
+        if exists(f"assets/temp/{reddit_id}/mp3/postaudio.mp3") and exists(f"assets/temp/{reddit_id}/png/story_content.png"):
+            post_audio_duration = float(ffmpeg.probe(f"assets/temp/{reddit_id}/mp3/postaudio.mp3")["format"]["duration"])
+            post_image = ffmpeg.input(f"assets/temp/{reddit_id}/png/story_content.png")["v"].filter("scale", screenshot_width, -1)
+            
+            overlay_start_time = current_time
+            overlay_end_time = current_time + post_audio_duration
+
+            processed_post_image = post_image
+            if settings.config["settings"]["theme"] != "transparent": # Though storymode method 0 usually uses dark/light actual screenshots
+                processed_post_image = post_image.filter("colorchannelmixer", aa=opacity)
+
             background_clip = background_clip.overlay(
-                image_overlay,
-                enable=f"between(t,{current_time},{current_time + audio_clips_durations[i]})",
+                processed_post_image,
+                enable=f"between(t,{overlay_start_time},{overlay_end_time})",
                 x="(main_w-overlay_w)/2",
                 y="(main_h-overlay_h)/2",
             )
-            current_time += audio_clips_durations[i]
+            current_time = overlay_end_time
+        else:
+            print_substep("Warning: Audio or image missing for storymode method 0.", style="yellow")
+
+    else: # Standard comment screenshot mode
+        # This assumes 0.mp3, 1.mp3... and corresponding comment_ID.png exist
+        audio_clips_durations_standard = []
+        # number_of_clips is from TTS, should be count of actual comment audios (0.mp3, 1.mp3...)
+        for i in range(number_of_clips):
+            audio_path = f"assets/temp/{reddit_id}/mp3/{i}.mp3"
+            if exists(audio_path):
+                audio_clips_durations_standard.append(float(ffmpeg.probe(audio_path)["format"]["duration"])) 
+            else:
+                print_substep(f"Warning: Comment audio {audio_path} not found.", style="yellow")
+                audio_clips_durations_standard.append(0) # Append 0 duration if audio missing
+
+        for i in range(number_of_clips):
+            actual_comment_id = reddit_obj["comments"][i]["comment_id"]
+            img_path = f"assets/temp/{reddit_id}/png/{actual_comment_id}.png"
+            if not exists(img_path):
+                print_substep(f"Warning: Comment image not found: {img_path}", style="yellow")
+                current_time += audio_clips_durations_standard[i] # Advance time by audio duration even if image missing
+                continue
+
+            comment_image = ffmpeg.input(img_path)["v"].filter("scale", screenshot_width, -1)
+            overlay_start_time = current_time
+            overlay_end_time = current_time + audio_clips_durations_standard[i]
+
+            # Standard comments are screenshots, so opacity applies to the whole screenshot box
+            processed_comment_image = comment_image.filter("colorchannelmixer", aa=opacity)
+
+            background_clip = background_clip.overlay(
+                processed_comment_image,
+                enable=f"between(t,{overlay_start_time},{overlay_end_time})",
+                x="(main_w-overlay_w)/2",
+                y="(main_h-overlay_h)/2",
+            )
+            current_time = overlay_end_time
 
     title = re.sub(r"[^\w\s-]", "", reddit_obj["thread_title"])
     idx = re.sub(r"[^\w\s-]", "", reddit_obj["thread_id"])
