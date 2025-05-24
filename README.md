@@ -1,5 +1,12 @@
 # Reddit Video Maker Bot 🎥
 
+# Changes:
+- [x] **Added** support for `max_words_per_segment` to generate less text per moment
+- [x] **Added** support for `read_first_comment_as_story` to generate a random comment inside a thread (most useful feature imo)
+- [x] Fixed the initial setup issues
+- [x] Fixed the issue with generating text (and other, many small bugfixes during video generation with storymode)
+- [x] Other many small bugfixes
+
 All done WITHOUT video editing or asset compiling. Just pure ✨programming magic✨.
 
 Created by Lewis Menelaws & [TMRRW](https://tmrrwinc.ca)
