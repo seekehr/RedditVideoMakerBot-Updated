@@ -197,16 +197,33 @@ def get_subreddit_threads(POST_ID: str):
     if submission is None:
         print_substep("Could not find a suitable post after checking all time filters.", style="bold red")
         return None # Propagate None if no submission is found
-
-    # Get used comment IDs for the current thread before processing comments
-    current_thread_id = submission.id
-    used_comment_ids_for_this_thread = set(used_content_data.get(current_thread_id, []))
-
+    
     elif not submission.num_comments and settings.config["settings"]["storymode"] == "false":
         print_substep("No comments found. Skipping.")
         exit()
 
-    submission = check_done(submission)  # double-checking
+    # Original submission before check_done, in case we need to proceed with it if storymode is false
+    original_submission_before_check = submission 
+    submission_was_already_done = False
+
+    if settings.config["settings"]["storymode"]:
+        submission = check_done(submission)  # storymode always respects videos.json
+        if submission is None: # check_done might return None if post was already done and not overridden
+            return None # check_done will print the reason
+    else: # Not storymode, check_done is only for informational purposes or if we can't find new comments
+        temp_submission_check = check_done(submission)
+        if temp_submission_check is None: # Indicates post is in videos.json
+            submission_was_already_done = True
+            # We don't return None here for non-storymode. We'll try to find new comments.
+            # The original submission object is preserved in `submission` (or original_submission_before_check)
+            print_substep(f"Post ID {submission.id} is in videos.json, but proceeding to check for new comments as storymode is false.", style="magenta")
+        # If temp_submission_check is not None, it means the post wasn't in videos.json, or was forced by post_id.
+        # In this case, submission remains the original submission object.
+
+    # MOVED BLOCK: Initialize these after all submission validity checks
+    current_thread_id = submission.id
+    used_comment_ids_for_this_thread = set(used_content_data.get(current_thread_id, []))
+    # END MOVED BLOCK
 
     upvotes = submission.score
     ratio = submission.upvote_ratio * 100
@@ -291,6 +308,11 @@ def get_subreddit_threads(POST_ID: str):
                             break 
             if not first_comment_processed:
                 print_substep("No suitable first comment found to process as story. Skipping post.", style="bold red")
+                # If the post was already done and we found no new first comment, then skip
+                if submission_was_already_done:
+                     print_substep(f"Post {original_submission_before_check.id} was in videos.json and no new suitable first comment found. Skipping.", style="yellow")
+                     return None
+                # else, it's a new post but just had no suitable first comment, which is also a skip condition
                 return None 
         else:
             # Original comment processing logic (no change here for parsed_story_content)
@@ -337,8 +359,6 @@ def get_subreddit_threads(POST_ID: str):
         newly_processed_comment_ids = {comment["comment_id"] for comment in content["comments"]}
         
         # Get existing used comment IDs for this thread from the main dict
-        # This ensures we update the set that was fetched at the start of processing this thread
-        # (in case it was modified by another part of the code, though unlikely here)
         master_list_for_thread = set(used_content_data.get(current_thread_id, []))
         
         updated_used_ids_for_thread = master_list_for_thread.union(newly_processed_comment_ids)
@@ -353,6 +373,14 @@ def get_subreddit_threads(POST_ID: str):
             if num_actually_newly_saved > 0:
                 print_substep(f"Saved {num_actually_newly_saved} new comment ID(s) for thread {current_thread_id} to {used_content_path}.", style="bold blue")
             elif newly_processed_comment_ids: # Comments were processed, but all were already known for this thread
-                print_substep(f"All processed comments for thread {current_thread_id} were already in {used_content_path}.", style="bold blue")
+                print_substep(f"All processed comments for thread {current_thread_id} were already in {used_content_path} (or no new comments were found suitable).", style="bold blue")
+            # If no comments were processed at all (e.g. all filtered by used_content or swear words)
+            # and the post was already in videos.json, then we might consider this a skip.
+            elif not newly_processed_comment_ids and submission_was_already_done:
+                 print_substep(f"Post {current_thread_id} was in videos.json and no new usable comments were found this time. Skipping save for videos.json to avoid re-logging without new content.", style="yellow")
+                 # We don't return the whole content object here, because we don't want main.py to try and make a video
+                 # The `save_data` call in `final_video.py` would update `videos.json` again if we returned content.
+                 # By returning None, we signal that no video should be made FROM THIS ATTEMPT.
+                 return None 
 
     return content
