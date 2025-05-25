@@ -1,4 +1,6 @@
 import re
+import json
+from pathlib import Path
 
 import praw
 from praw.models import MoreComments
@@ -48,6 +50,18 @@ def get_subreddit_threads(POST_ID: str):
 
     # Ask user for subreddit input
     print_step("Getting subreddit threads...")
+
+    # Load used comment IDs
+    used_content_path = Path("video_creation/data/used_content.json")
+    if used_content_path.exists():
+        with open(used_content_path, "r", encoding="utf-8") as f:
+            try:
+                used_content_data = json.load(f)
+                used_comment_ids = set(used_content_data.get("used_comment_ids", []))
+            except json.JSONDecodeError:
+                used_comment_ids = set() # Initialize as empty if file is corrupted
+    else:
+        used_comment_ids = set()
 
     if not settings.config["reddit"]["thread"][
         "subreddit"
@@ -195,6 +209,7 @@ def get_subreddit_threads(POST_ID: str):
                             if (
                                 top_level_comment.author is not None
                                 and sanitize_text(top_level_comment.body) is not None
+                                and top_level_comment.id not in used_comment_ids # Check if comment has been used
                             ):  # if errors occur with this change to if not.
                                 content["comments"].append(
                                     {
@@ -205,4 +220,13 @@ def get_subreddit_threads(POST_ID: str):
                                 )
 
     print_substep("Received subreddit threads Successfully.", style="bold green")
+
+    # Save used comment IDs if not in storymode and comments were processed
+    if not settings.config["settings"]["storymode"] and content["comments"]:
+        newly_used_ids = {comment["comment_id"] for comment in content["comments"]}
+        all_used_ids = list(used_comment_ids.union(newly_used_ids))
+        with open(used_content_path, "w", encoding="utf-8") as f:
+            json.dump({"used_comment_ids": all_used_ids}, f, indent=4)
+        print_substep(f"Saved {len(newly_used_ids)} new comment ID(s) to used_content.json.", style="bold blue")
+
     return content
