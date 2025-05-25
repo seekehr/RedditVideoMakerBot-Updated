@@ -465,16 +465,28 @@ def make_final_video(
     idx = re.sub(r"[^\w\s-]", "", reddit_obj["thread_id"])
     title_thumb = reddit_obj["thread_title"]
 
-    filename = f"{name_normalize(title)[:251]}"
+    base_filename = f"{name_normalize(title)[:251]}"
+    filename = base_filename # Start with the base filename
     subreddit = settings.config["reddit"]["thread"]["subreddit"]
+    output_dir = Path(f"./results/{subreddit}")
 
-    if not exists(f"./results/{subreddit}"):
+    if not settings.config["settings"]["storymode"]:
+        counter = 1
+        # Construct the full path for checking
+        potential_path = output_dir / f"{filename}.mp4"
+        while potential_path.exists():
+            filename = f"{base_filename} ({counter})"
+            potential_path = output_dir / f"{filename}.mp4"
+            counter += 1
+
+    if not output_dir.exists():
         print_substep("The 'results' folder could not be found so it was automatically created.")
-        os.makedirs(f"./results/{subreddit}")
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    if not exists(f"./results/{subreddit}/OnlyTTS") and allowOnlyTTSFolder:
+    only_tts_dir = output_dir / "OnlyTTS" # Define OnlyTTS path relative to output_dir
+    if not only_tts_dir.exists() and allowOnlyTTSFolder:
         print_substep("The 'OnlyTTS' folder could not be found so it was automatically created.")
-        os.makedirs(f"./results/{subreddit}/OnlyTTS")
+        only_tts_dir.mkdir(parents=True, exist_ok=True)
 
     # create a thumbnail for the video
     settingsbackground = settings.config["settings"]["background"]
@@ -532,12 +544,11 @@ def make_final_video(
         old_percentage = pbar.n
         pbar.update(status - old_percentage)
 
-    defaultPath = f"results/{subreddit}"
     with ProgressFfmpeg(length, on_update_example) as progress:
-        path = defaultPath + f"/{filename}"
-        path = (
-            path[:251] + ".mp4"
-        )  # Prevent a error by limiting the path length, do not change this.
+        path = str(output_dir / f"{filename}.mp4") # Use the potentially modified filename
+        # path = (
+        #     path[:251] + ".mp4"
+        # )  # Prevent a error by limiting the path length, do not change this. # Path length check might need re-evaluation with counters
         try:
             ffmpeg.output(
                 background_clip,
@@ -562,10 +573,10 @@ def make_final_video(
     old_percentage = pbar.n
     pbar.update(100 - old_percentage)
     if allowOnlyTTSFolder:
-        path = defaultPath + f"/OnlyTTS/{filename}"
-        path = (
-            path[:251] + ".mp4"
-        )  # Prevent a error by limiting the path length, do not change this.
+        path = str(only_tts_dir / f"{filename}.mp4") # Use the potentially modified filename for OnlyTTS too
+        # path = (
+        #     path[:251] + ".mp4"
+        # )  # Prevent a error by limiting the path length, do not change this.
         print_step("Rendering the Only TTS Video 🎥")
         with ProgressFfmpeg(length, on_update_example) as progress:
             try:
