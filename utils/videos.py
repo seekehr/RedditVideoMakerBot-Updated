@@ -1,10 +1,11 @@
 import json
 import time
+from pathlib import Path
 
 from praw.models import Submission
 
 from utils import settings
-from utils.console import print_step
+from utils.console import print_step, print_substep
 
 
 def check_done(
@@ -19,8 +20,28 @@ def check_done(
     Returns:
         Submission|None: Reddit object in args
     """
-    with open("./video_creation/data/videos.json", "r", encoding="utf-8") as done_vids_raw:
-        done_videos = json.load(done_vids_raw)
+    videos_json_path = Path("./video_creation/data/videos.json")
+    done_videos = []
+
+    if videos_json_path.exists():
+        try:
+            with open(videos_json_path, "r", encoding="utf-8") as done_vids_raw:
+                loaded_data = json.load(done_vids_raw)
+                if isinstance(loaded_data, list):
+                    done_videos = loaded_data
+                else:
+                    with open(videos_json_path, "w", encoding="utf-8") as f_write:
+                        json.dump([], f_write)
+                    print_substep("`videos.json` was not a list. Initialized as empty list.", style="bold yellow")
+        except json.JSONDecodeError:
+            with open(videos_json_path, "w", encoding="utf-8") as f_write:
+                json.dump([], f_write)
+            print_substep("`videos.json` was corrupted. Initialized as empty list.", style="bold yellow")
+    else:
+        with open(videos_json_path, "w", encoding="utf-8") as f_write:
+            json.dump([], f_write)
+        print_substep("`videos.json` not found. Created with empty list.", style="bold yellow")
+
     for video in done_videos:
         if video["id"] == str(redditobj):
             if settings.config["reddit"]["thread"]["post_id"]:
@@ -43,18 +64,36 @@ def save_data(subreddit: str, filename: str, reddit_title: str, reddit_id: str, 
         @param reddit_id:
         @param reddit_title:
     """
-    with open("./video_creation/data/videos.json", "r+", encoding="utf-8") as raw_vids:
-        done_vids = json.load(raw_vids)
-        if reddit_id in [video["id"] for video in done_vids]:
-            return  # video already done but was specified to continue anyway in the config file
-        payload = {
-            "subreddit": subreddit,
-            "id": reddit_id,
-            "time": str(int(time.time())),
-            "background_credit": credit,
-            "reddit_title": reddit_title,
-            "filename": filename,
-        }
-        done_vids.append(payload)
-        raw_vids.seek(0)
-        json.dump(done_vids, raw_vids, ensure_ascii=False, indent=4)
+    videos_json_path = Path("./video_creation/data/videos.json")
+    done_vids = []
+
+    if videos_json_path.exists():
+        try:
+            with open(videos_json_path, "r", encoding="utf-8") as raw_vids_read:
+                loaded_data = json.load(raw_vids_read)
+                if isinstance(loaded_data, list):
+                    done_vids = loaded_data
+                # If it's not a list (e.g. {} or corrupted), it will be overwritten as a list below
+        except json.JSONDecodeError:
+            pass # Will be overwritten as a list below
+
+    # Ensure done_vids is a list before proceeding with append logic
+    if not isinstance(done_vids, list):
+        done_vids = []
+        print_substep("Warning: `videos.json` was invalid or empty, initialized as new list for saving.", style="bold yellow")
+
+    if reddit_id in [video["id"] for video in done_vids]:
+        return  # video already done but was specified to continue anyway in the config file
+    payload = {
+        "subreddit": subreddit,
+        "id": reddit_id,
+        "time": str(int(time.time())),
+        "background_credit": credit,
+        "reddit_title": reddit_title,
+        "filename": filename,
+    }
+    done_vids.append(payload)
+    
+    # Write the updated list back to the file
+    with open(videos_json_path, "w", encoding="utf-8") as raw_vids_write: # Open in write mode
+        json.dump(done_vids, raw_vids_write, ensure_ascii=False, indent=4)
