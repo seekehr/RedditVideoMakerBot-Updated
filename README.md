@@ -3,10 +3,14 @@
 # Changes:
 - [x] **Added** support for `max_words_per_segment` to generate less text per moment
 - [x] **Added** support for `read_first_comment_as_story` to generate a random comment inside a thread (most useful feature imo)
+- [x] **Added** `search_keywords` to allow searching threads/comments based on the keywords (REGARDLESS of if storymode is true)
+- [x] **Removed** support for AI similarity. Extremely buggy and not v useful 
 - [x] Fixed the initial setup issues
 - [x] Fixed the issue with generating text (and other, many small bugfixes during video generation with storymode)
 - [x] Other many small bugfixes
 
+**Example video:** https://www.youtube.com/shorts/lT-ygJzz0A0
+--------------------------------------------
 All done WITHOUT video editing or asset compiling. Just pure ✨programming magic✨.
 
 Created by Lewis Menelaws & [TMRRW](https://tmrrwinc.ca)
