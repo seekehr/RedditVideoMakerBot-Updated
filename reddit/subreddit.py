@@ -51,17 +51,28 @@ def get_subreddit_threads(POST_ID: str):
     # Ask user for subreddit input
     print_step("Getting subreddit threads...")
 
-    # Load used comment IDs
+    # Load used comment data (thread_id -> list of comment_ids)
     used_content_path = Path("video_creation/data/used_content.json")
+    used_content_data = {}  # Initialize as an empty dict
+
     if used_content_path.exists():
-        with open(used_content_path, "r", encoding="utf-8") as f:
-            try:
-                used_content_data = json.load(f)
-                used_comment_ids = set(used_content_data.get("used_comment_ids", []))
-            except json.JSONDecodeError:
-                used_comment_ids = set() # Initialize as empty if file is corrupted
+        try:
+            with open(used_content_path, "r", encoding="utf-8") as f:
+                loaded_json = json.load(f)
+                if isinstance(loaded_json, dict):
+                    used_content_data = loaded_json
+                else:
+                    print_substep(f"`{used_content_path}` was not a dictionary. Initializing for thread-specific comment tracking.", style="bold yellow")
+                    with open(used_content_path, "w", encoding="utf-8") as f_write:
+                        json.dump({}, f_write) # Overwrite with new empty dict structure
+        except json.JSONDecodeError:
+            print_substep(f"`{used_content_path}` was corrupted. Initializing for thread-specific comment tracking.", style="bold yellow")
+            with open(used_content_path, "w", encoding="utf-8") as f_write:
+                json.dump({}, f_write) # Overwrite with new empty dict structure
     else:
-        used_comment_ids = set()
+        with open(used_content_path, "w", encoding="utf-8") as f_write:
+            json.dump({}, f_write)
+        print_substep(f"`{used_content_path}` not found. Created for thread-specific comment tracking.", style="bold yellow")
 
     if not settings.config["reddit"]["thread"][
         "subreddit"
@@ -108,6 +119,10 @@ def get_subreddit_threads(POST_ID: str):
     if submission is None:
         print_substep("Could not find a suitable post after checking all time filters.", style="bold red")
         return None # Propagate None if no submission is found
+
+    # Get used comment IDs for the current thread before processing comments
+    current_thread_id = submission.id
+    used_comment_ids_for_this_thread = set(used_content_data.get(current_thread_id, []))
 
     elif not submission.num_comments and settings.config["settings"]["storymode"] == "false":
         print_substep("No comments found. Skipping.")
@@ -213,7 +228,7 @@ def get_subreddit_threads(POST_ID: str):
                             if (
                                 top_level_comment.author is not None
                                 and sanitize_text(top_level_comment.body) is not None
-                                and top_level_comment.id not in used_comment_ids # Check if comment has been used
+                                and top_level_comment.id not in used_comment_ids_for_this_thread # Check against thread-specific list
                             ):  # if errors occur with this change to if not.
                                 content["comments"].append(
                                     {
@@ -227,10 +242,25 @@ def get_subreddit_threads(POST_ID: str):
 
     # Save used comment IDs if not in storymode and comments were processed
     if not settings.config["settings"]["storymode"] and content["comments"]:
-        newly_used_ids = {comment["comment_id"] for comment in content["comments"]}
-        all_used_ids = list(used_comment_ids.union(newly_used_ids))
-        with open(used_content_path, "w", encoding="utf-8") as f:
-            json.dump({"used_comment_ids": all_used_ids}, f, indent=4)
-        print_substep(f"Saved {len(newly_used_ids)} new comment ID(s) to used_content.json.", style="bold blue")
+        newly_processed_comment_ids = {comment["comment_id"] for comment in content["comments"]}
+        
+        # Get existing used comment IDs for this thread from the main dict
+        # This ensures we update the set that was fetched at the start of processing this thread
+        # (in case it was modified by another part of the code, though unlikely here)
+        master_list_for_thread = set(used_content_data.get(current_thread_id, []))
+        
+        updated_used_ids_for_thread = master_list_for_thread.union(newly_processed_comment_ids)
+        
+        if updated_used_ids_for_thread: # Only update if there's something to save for this thread
+            used_content_data[current_thread_id] = sorted(list(updated_used_ids_for_thread))
+            
+            with open(used_content_path, "w", encoding="utf-8") as f:
+                json.dump(used_content_data, f, indent=4)
+            
+            num_actually_newly_saved = len(newly_processed_comment_ids - master_list_for_thread)
+            if num_actually_newly_saved > 0:
+                print_substep(f"Saved {num_actually_newly_saved} new comment ID(s) for thread {current_thread_id} to {used_content_path}.", style="bold blue")
+            elif newly_processed_comment_ids: # Comments were processed, but all were already known for this thread
+                print_substep(f"All processed comments for thread {current_thread_id} were already in {used_content_path}.", style="bold blue")
 
     return content
