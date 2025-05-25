@@ -13,6 +13,38 @@ from utils.subreddit import get_subreddit_undone
 from utils.videos import check_done
 from utils.voice import sanitize_text
 
+# --- Swear Word Filter --- 
+SWEAR_WORDS_PATH = Path("swear_words.json")
+LOADED_SWEAR_WORDS = []
+
+if SWEAR_WORDS_PATH.exists():
+    try:
+        with open(SWEAR_WORDS_PATH, "r", encoding="utf-8") as f_swear:
+            LOADED_SWEAR_WORDS = json.load(f_swear)
+            if not isinstance(LOADED_SWEAR_WORDS, list):
+                print_substep(f"Warning: `{SWEAR_WORDS_PATH}` does not contain a valid list. Swear word filter disabled.", style="bold yellow")
+                LOADED_SWEAR_WORDS = []
+            else:
+                LOADED_SWEAR_WORDS = [str(word).lower() for word in LOADED_SWEAR_WORDS] # Normalize to lowercase
+    except json.JSONDecodeError:
+        print_substep(f"Warning: Could not parse `{SWEAR_WORDS_PATH}`. Swear word filter disabled.", style="bold yellow")
+        LOADED_SWEAR_WORDS = []
+    except Exception as e:
+        print_substep(f"Warning: Error loading `{SWEAR_WORDS_PATH}`: {e}. Swear word filter disabled.", style="bold yellow")
+        LOADED_SWEAR_WORDS = []
+else:
+    print_substep(f"Warning: `{SWEAR_WORDS_PATH}` not found. Swear word filter disabled.", style="bold yellow")
+
+def contains_swear_word(text: str) -> bool:
+    if not LOADED_SWEAR_WORDS or not text:
+        return False
+    text_lower = str(text).lower()
+    # Use word boundaries to avoid matching substrings within words
+    for word in LOADED_SWEAR_WORDS:
+        if re.search(r"\b" + re.escape(word) + r"\b", text_lower):
+            return True
+    return False
+# --- End Swear Word Filter ---
 
 def get_subreddit_threads(POST_ID: str):
     """
@@ -111,10 +143,56 @@ def get_subreddit_threads(POST_ID: str):
             if not threads:
                 print_substep("No posts found for the given keywords.", style="bold red")
                 return None
-            submission = get_subreddit_undone(threads, subreddit) # Selects a suitable post from search results
+            # --- Swear Word Filter: Added loop to retry if submission is filtered ---
+            max_retries = 5 # Limit retries to avoid infinite loops
+            for _ in range(max_retries):
+                submission = get_subreddit_undone(threads, subreddit)
+                if submission is None: # No suitable post found by get_subreddit_undone
+                    break 
+                
+                title_to_check = submission.title
+                content_to_check = submission.selftext if settings.config["settings"]["storymode"] else ""
+                
+                if contains_swear_word(title_to_check):
+                    print_substep(f"Post skipped: Title contains a blocked word. ID: {submission.id}", style="yellow")
+                    submission = None # Mark for retry / skip
+                    threads = subreddit.hot(limit=25) # Refresh threads for next attempt
+                    continue
+                
+                if settings.config["settings"]["storymode"] and contains_swear_word(content_to_check):
+                    print_substep(f"Post skipped: Story content contains a blocked word. ID: {submission.id}", style="yellow")
+                    submission = None # Mark for retry / skip
+                    threads = subreddit.hot(limit=25) # Refresh threads for next attempt
+                    continue
+                
+                break # Found a suitable, non-filtered submission
+            # --- End Swear Word Filter Modification ---
         else:
             threads = subreddit.hot(limit=25)
-            submission = get_subreddit_undone(threads, subreddit)
+            # --- Swear Word Filter: Added loop to retry if submission is filtered ---
+            max_retries = 5 # Limit retries to avoid infinite loops
+            for _ in range(max_retries):
+                submission = get_subreddit_undone(threads, subreddit)
+                if submission is None: # No suitable post found by get_subreddit_undone
+                    break 
+                
+                title_to_check = submission.title
+                content_to_check = submission.selftext if settings.config["settings"]["storymode"] else ""
+                
+                if contains_swear_word(title_to_check):
+                    print_substep(f"Post skipped: Title contains a blocked word. ID: {submission.id}", style="yellow")
+                    submission = None # Mark for retry / skip
+                    threads = subreddit.hot(limit=25) # Refresh threads for next attempt
+                    continue
+                
+                if settings.config["settings"]["storymode"] and contains_swear_word(content_to_check):
+                    print_substep(f"Post skipped: Story content contains a blocked word. ID: {submission.id}", style="yellow")
+                    submission = None # Mark for retry / skip
+                    threads = subreddit.hot(limit=25) # Refresh threads for next attempt
+                    continue
+                
+                break # Found a suitable, non-filtered submission
+            # --- End Swear Word Filter Modification ---
 
     if submission is None:
         print_substep("Could not find a suitable post after checking all time filters.", style="bold red")
@@ -183,6 +261,13 @@ def get_subreddit_threads(POST_ID: str):
                     sanitised_body = sanitize_text(top_level_comment.body)
                     if not sanitised_body or sanitised_body.isspace():
                         continue
+                    
+                    # --- Swear Word Filter for read_first_comment_as_story ---
+                    if contains_swear_word(top_level_comment.body):
+                        print_substep(f"Comment skipped (read_first_comment_as_story): Contains a blocked word. ID: {top_level_comment.id}", style="yellow")
+                        continue
+                    # --- End Swear Word Filter ---
+
                     if len(top_level_comment.body) <= int(
                         settings.config["reddit"]["thread"]["max_comment_length"]
                     ) and len(top_level_comment.body) >= int(
@@ -219,6 +304,13 @@ def get_subreddit_threads(POST_ID: str):
                     sanitised = sanitize_text(top_level_comment.body)
                     if not sanitised or sanitised == " ":
                         continue
+                    
+                    # --- Swear Word Filter for standard comments ---
+                    if contains_swear_word(top_level_comment.body):
+                        print_substep(f"Comment skipped: Contains a blocked word. ID: {top_level_comment.id}", style="yellow")
+                        continue
+                    # --- End Swear Word Filter ---
+
                     if len(top_level_comment.body) <= int(
                         settings.config["reddit"]["thread"]["max_comment_length"]
                     ):
