@@ -2,7 +2,7 @@
 
 # Changes:
 - [x] **Added** filter for swear words (to accomadate for youtube shorts/tiktok/reels guidelines). Modify in `swear_words.json`
-- [x] **Added** support for `max_words_per_segment` to generate less text per moment
+- [x] **Added** support for `max_words_per_segment` to generate less text per moment to sync with AI voice 
 - [x] **Added** support for `read_first_comment_as_story` to generate a random comment inside a thread (most useful feature imo)
 - [x] **Added** `search_keywords` to allow searching threads/comments based on the keywords (REGARDLESS of if storymode is true)
 - [x] **Added** `used_content.json` to ensure the same comment is not used everytime (if storymode is false)
