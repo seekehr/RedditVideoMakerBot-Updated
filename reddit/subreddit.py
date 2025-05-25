@@ -5,7 +5,6 @@ from praw.models import MoreComments
 from prawcore.exceptions import ResponseException
 
 from utils import settings
-from utils.ai_methods import sort_by_similarity
 from utils.console import print_step, print_substep
 from utils.posttextparser import posttextparser
 from utils.subreddit import get_subreddit_undone
@@ -49,7 +48,7 @@ def get_subreddit_threads(POST_ID: str):
 
     # Ask user for subreddit input
     print_step("Getting subreddit threads...")
-    similarity_score = 0
+
     if not settings.config["reddit"]["thread"][
         "subreddit"
     ]:  # note to user. you can have multiple subreddits via reddit.subreddit("redditdev+learnpython")
@@ -77,20 +76,20 @@ def get_subreddit_threads(POST_ID: str):
         and len(str(settings.config["reddit"]["thread"]["post_id"]).split("+")) == 1
     ):
         submission = reddit.submission(id=settings.config["reddit"]["thread"]["post_id"])
-    elif settings.config["ai"]["ai_similarity_enabled"]:  # ai sorting based on comparison
-        threads = subreddit.hot(limit=50)
-        keywords = settings.config["ai"]["ai_similarity_keywords"].split(",")
-        keywords = [keyword.strip() for keyword in keywords]
-        # Reformat the keywords for printing
-        keywords_print = ", ".join(keywords)
-        print(f"Sorting threads by similarity to the given keywords: {keywords_print}")
-        threads, similarity_scores = sort_by_similarity(threads, keywords)
-        submission, similarity_score = get_subreddit_undone(
-            threads, subreddit, similarity_scores=similarity_scores
-        )
     else:
-        threads = subreddit.hot(limit=25)
-        submission = get_subreddit_undone(threads, subreddit)
+        search_keywords = settings.config["reddit"]["thread"].get("search_keywords")
+        if search_keywords:
+            threads = []
+            for keyword in search_keywords:
+                print_substep(f"Searching for keyword: '{keyword}' in subreddit r/{subreddit_choice}")
+                threads.extend(list(subreddit.search(keyword, limit=10))) # Limit to 10 results per keyword
+            if not threads:
+                print_substep("No posts found for the given keywords.", style="bold red")
+                return None
+            submission = get_subreddit_undone(threads, subreddit) # Selects a suitable post from search results
+        else:
+            threads = subreddit.hot(limit=25)
+            submission = get_subreddit_undone(threads, subreddit)
 
     if submission is None:
         print_substep("Could not find a suitable post after checking all time filters.", style="bold red")
@@ -112,11 +111,6 @@ def get_subreddit_threads(POST_ID: str):
     print_substep(f"Thread has {upvotes} upvotes", style="bold blue")
     print_substep(f"Thread has a upvote ratio of {ratio}%", style="bold blue")
     print_substep(f"Thread has {num_comments} comments", style="bold blue")
-    if similarity_score:
-        print_substep(
-            f"Thread has a similarity score up to {round(similarity_score * 100)}%",
-            style="bold blue",
-        )
 
     content["thread_url"] = threadurl
     content["thread_title"] = submission.title
