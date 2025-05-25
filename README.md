@@ -4,6 +4,9 @@
 - [x] **Added** support for `max_words_per_segment` to generate less text per moment
 - [x] **Added** support for `read_first_comment_as_story` to generate a random comment inside a thread (most useful feature imo)
 - [x] **Added** `search_keywords` to allow searching threads/comments based on the keywords (REGARDLESS of if storymode is true)
+- [x] **Added** `used_content.json` to ensure the same comment is not used everytime (if storymode is false)
+- [x] **Added** support for duplicate mp3s if the same thread is used for comments/video (useful if storymode is false)
+- [x] **Added** cleaner titles support by removing the text within [] brackets (many posts have, e.g, [ Serious ] in their title)
 - [x] **Removed** support for AI similarity. Extremely buggy and not v useful 
 - [x] Fixed the initial setup issues
 - [x] Fixed the issue with generating text (and other, many small bugfixes during video generation with storymode)
