@@ -6,29 +6,23 @@ from utils import settings
 from utils.console import print_substep
 
 
-def get_subreddit_undone(submissions: list, subreddit, times_checked=0):
-    """_summary_
-
-    Args:
-        submissions (list): List of posts that are going to potentially be generated into a video
-        subreddit (praw.Reddit.SubredditHelper): Chosen subreddit
-
-    Returns:
-        Any: The submission that has not been done
-    """
-    # Second try of getting a valid Submission
+def get_subreddit_undone(submissions: list, subreddit, times_checked=0, unsuitable_thread_ids: list = None):
     if times_checked:
         print_substep("Sorting submissions by AI similarity...")
 
-    # recursively checks if the top submission in the list was already done.
     if not exists("./video_creation/data/videos.json"):
         with open("./video_creation/data/videos.json", "w+") as f:
             json.dump([], f)
     with open("./video_creation/data/videos.json", "r", encoding="utf-8") as done_vids_raw:
         done_videos = json.load(done_vids_raw)
-    for i, submission in enumerate(submissions):
+
+    for submission in submissions:
         if already_done(done_videos, submission):
             continue
+        
+        if unsuitable_thread_ids and submission.id in unsuitable_thread_ids and not settings.config["settings"]["storymode"]:
+            continue
+
         if submission.over_18:
             try:
                 if not settings.config["settings"]["allow_nsfw"]:
@@ -43,16 +37,13 @@ def get_subreddit_undone(submissions: list, subreddit, times_checked=0):
             submission.num_comments <= int(settings.config["reddit"]["thread"]["min_comments"])
             and not settings.config["settings"]["storymode"]
         ):
-            print_substep(
-                f'This post has under the specified minimum of comments ({settings.config["reddit"]["thread"]["min_comments"]}). Skipping...'
-            )
+            unsuitable_thread_ids.append(submission.id) 
             continue
         if settings.config["settings"]["storymode"]:
             if not submission.selftext:
                 print_substep("You are trying to use story mode on post with no post text")
                 continue
             else:
-                # Check for the length of the post text
                 if len(submission.selftext) > (
                     settings.config["settings"]["storymode_max_length"] or 2000
                 ):
@@ -65,7 +56,7 @@ def get_subreddit_undone(submissions: list, subreddit, times_checked=0):
         if settings.config["settings"]["storymode"] and not submission.is_self:
             continue
         return submission
-    print("all submissions have been done going by top submission order")
+
     VALID_TIME_FILTERS = [
         "day",
         "hour",
@@ -73,10 +64,9 @@ def get_subreddit_undone(submissions: list, subreddit, times_checked=0):
         "week",
         "year",
         "all",
-    ]  # set doesn't have __getitem__
+    ]
     index = times_checked + 1
     if index >= len(VALID_TIME_FILTERS):
-        print("All submissions have been done. No suitable post found after checking all time filters.")
         return None
 
     return get_subreddit_undone(
@@ -86,20 +76,11 @@ def get_subreddit_undone(submissions: list, subreddit, times_checked=0):
         ),
         subreddit,
         times_checked=index,
-    )  # all the videos in hot have already been done
+        unsuitable_thread_ids=unsuitable_thread_ids
+    )
 
 
 def already_done(done_videos: list, submission) -> bool:
-    """Checks to see if the given submission is in the list of videos
-
-    Args:
-        done_videos (list): Finished videos
-        submission (Any): The submission
-
-    Returns:
-        Boolean: Whether the video was found in the list
-    """
-
     for video in done_videos:
         if video["id"] == str(submission):
             return True

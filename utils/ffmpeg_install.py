@@ -13,18 +13,14 @@ def ffmpeg_install_windows():
         ffmpeg_zip_filename = "ffmpeg.zip"
         ffmpeg_extracted_folder = "ffmpeg"
 
-        # Check if ffmpeg.zip already exists
         if os.path.exists(ffmpeg_zip_filename):
             os.remove(ffmpeg_zip_filename)
 
-        # Download FFmpeg
         r = requests.get(ffmpeg_url)
         with open(ffmpeg_zip_filename, "wb") as f:
             f.write(r.content)
 
-        # Check if the extracted folder already exists
         if os.path.exists(ffmpeg_extracted_folder):
-            # Remove existing extracted folder and its contents
             for root, dirs, files in os.walk(ffmpeg_extracted_folder, topdown=False):
                 for file in files:
                     os.remove(os.path.join(root, file))
@@ -32,12 +28,10 @@ def ffmpeg_install_windows():
                     os.rmdir(os.path.join(root, dir))
             os.rmdir(ffmpeg_extracted_folder)
 
-        # Extract FFmpeg
         with zipfile.ZipFile(ffmpeg_zip_filename, "r") as zip_ref:
             zip_ref.extractall()
         os.remove("ffmpeg.zip")
 
-        # Rename and move files
         os.rename(f"{ffmpeg_extracted_folder}-6.0-full_build", ffmpeg_extracted_folder)
         for file in os.listdir(os.path.join(ffmpeg_extracted_folder, "bin")):
             os.rename(
@@ -103,7 +97,6 @@ def ffmpeg_install_mac():
 
 def ffmpeg_install():
     try:
-        # Try to run the FFmpeg command
         subprocess.run(
             ["ffmpeg", "-version"],
             check=True,
@@ -111,7 +104,6 @@ def ffmpeg_install():
             stderr=subprocess.PIPE,
         )
     except FileNotFoundError as e:
-        # Check if there's ffmpeg.exe in the current directory
         if os.path.exists("./ffmpeg.exe"):
             print(
                 "FFmpeg is installed on this system! If you are seeing this error for the second time, restart your computer."

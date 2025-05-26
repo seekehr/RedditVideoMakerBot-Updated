@@ -8,11 +8,11 @@ from rich.console import Console
 from utils.console import handle_input
 
 console = Console()
-config = dict  # autocomplete
+config = dict
 
 
 def crawl(obj: dict, func=lambda x, y: print(x, y, end="\n"), path=None):
-    if path is None:  # path Default argument value is mutable
+    if path is None:
         path = []
     for key in obj.keys():
         if type(obj[key]) is dict:
@@ -36,7 +36,7 @@ def check(value, checks, name):
 
     if (
         not incorrect and "options" in checks and value not in checks["options"]
-    ):  # FAILSTATE Value is not one of the options
+    ):
         incorrect = True
     if (
         not incorrect
@@ -45,7 +45,7 @@ def check(value, checks, name):
             (isinstance(value, str) and re.match(checks["regex"], value) is None)
             or not isinstance(value, str)
         )
-    ):  # FAILSTATE Value doesn't match regex, or has regex but is not a string.
+    ):
         incorrect = True
 
     if (
@@ -163,8 +163,3 @@ If you see any prompts, that means that you have unset/incorrectly set variables
     with open(config_file, "w") as f:
         toml.dump(config, f)
     return config
-
-
-if __name__ == "__main__":
-    directory = Path().absolute()
-    check_toml(f"{directory}/utils/.config.template.toml", "config.toml")

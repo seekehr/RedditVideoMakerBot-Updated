@@ -204,7 +204,7 @@ def make_final_video(
 
     opacity = settings.config["settings"]["opacity"]
     storymode_enabled: bool = settings.config["settings"]["storymode"]
-    read_first_comment_as_story_enabled: bool = settings.config["settings"]["read_first_comment_as_story"]
+    read_comment_as_story_enabled: bool = settings.config["settings"]["read_comment_as_story"]
 
     reddit_id = re.sub(r"[^\w\s-]", "", reddit_obj["thread_id"])
 
@@ -237,7 +237,7 @@ def make_final_video(
             for i in range(num_audio_segments):
                 audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/audio_segment-{i}.mp3"))
 
-    elif read_first_comment_as_story_enabled:
+    elif read_comment_as_story_enabled:
         # Read first comment as story: Title audio + multiple audio_segment-N.mp3 for the first comment
         audio_clips.append(ffmpeg.input(f"assets/temp/{reddit_id}/mp3/title.mp3"))
         num_audio_segments_comment = len(reddit_obj.get("audio_segments", [])) # These are sentences of the 1st comment
@@ -262,7 +262,7 @@ def make_final_video(
         return # or exit()
     
     # Create the main concatenated audio track for the video
-    # For read_first_comment_as_story, TTS already created 0.mp3 which is the full comment audio.
+    # For read_comment_as_story, TTS already created 0.mp3 which is the full comment audio.
     # We need to decide if audio_concat should use that, or concat title + audio_segments.
     # For simplicity and consistency with storymode method 1, let's concat title + audio_segments.
     # The final audio mix with background music will use this.
@@ -364,7 +364,7 @@ def make_final_video(
                 current_time = overlay_end_time # Advance current time by the duration of this visual chunk
                 global_visual_chunk_idx += 1
 
-    elif read_first_comment_as_story_enabled:
+    elif read_comment_as_story_enabled:
         # Similar logic for the first comment being read as a story
         parsed_story_content = reddit_obj.get("parsed_story_content", []) # This is for the first comment
         global_visual_chunk_idx = 0 

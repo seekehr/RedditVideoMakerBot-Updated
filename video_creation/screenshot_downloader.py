@@ -28,7 +28,7 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
     H: Final[int] = int(settings.config["settings"]["resolution_h"])
     lang: Final[str] = settings.config["reddit"]["thread"]["post_lang"]
     storymode: Final[bool] = settings.config["settings"]["storymode"]
-    read_first_comment_as_story: Final[bool] = settings.config["settings"]["read_first_comment_as_story"]
+    read_comment_as_story: Final[bool] = settings.config["settings"]["read_comment_as_story"]
 
     print_step("Downloading screenshots of reddit posts...")
     reddit_id = re.sub(r"[^\w\s-]", "", reddit_object["thread_id"])
@@ -56,9 +56,8 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
         txtcolor = (0, 0, 0)
         transparent = False
 
-    # Handling for modes that use imagemaker (storymode method 1, or the new first_comment_as_story mode)
     if (storymode and settings.config["settings"]["storymodemethod"] == 1) or \
-       (not storymode and read_first_comment_as_story):
+       (not storymode and read_comment_as_story):
         print_substep("Generating images for story-style content...")
         if not isinstance(reddit_object.get("thread_post"), list):
             print_substep("Warning: thread_post is not a list. imagemaker might not work as expected.", style="bold yellow")
@@ -73,12 +72,7 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
             transparent=transparent,
         )
 
-    # If not using imagemaker, proceed with Playwright-based screenshotting
-    # This covers:
-    # 1. storymode = true AND storymodemethod = 0 (single image for post)
-    # 2. storymode = false AND read_first_comment_as_story = false (standard comment screenshots)
-    
-    screenshot_num_actual = screenshot_num # Renaming to avoid conflict with outer scope if any confusion
+    screenshot_num_actual = screenshot_num
 
     with sync_playwright() as p:
         print_substep("Launching Headless Browser...")
@@ -90,14 +84,12 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
             device_scale_factor=settings.config["settings"]["zoom"],
         )
         cookies = json.load(cookie_file)
-        context.add_cookies(cookies)  # type: ignore
+        context.add_cookies(cookies)
         page = context.new_page()
-        page.set_default_timeout(0) # Playwright's own timeout for actions like click, goto.
+        page.set_default_timeout(0)
 
-        # Navigate to the post URL first to handle any overlays, logins, or translations if necessary
-        # This is common for both storymode (method 0) and standard comment screenshotting
         page.goto(reddit_object["thread_url"], wait_until="domcontentloaded", timeout=60000)
-        page.wait_for_timeout(1000) # Allow some time for dynamic content to load
+        page.wait_for_timeout(1000)
 
         if page.locator('[data-testid="content-gate"]').is_visible():
             print_substep("Content gate found. Clicking...", style="yellow")
@@ -140,10 +132,8 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
                 print_substep(f"Saved story content screenshot to assets/temp/{reddit_id}/png/story_content.png", style="green")
             except Exception as e:
                 print_substep(f"Error taking screenshot for story_content.png: {e}", style="bold red")
-                # Consider saving HTML for debugging as in the original code
-                # html_content = page.content() ... save ...
 
-        else: # This means storymode=false and read_first_comment_as_story=false (standard comment screenshots)
+        else:
             print_substep("Taking screenshots of comments...", style="green")
             clear_cookie_by_name(context, ['loid','session_tracker','csv','edgebucket','token_v2','session','recent_srs'])
             
@@ -164,30 +154,18 @@ def get_screenshots_of_reddit_posts(reddit_object: dict, screenshot_num: int):
                 print_substep(f"Navigating to comment: {comment_url}",-1)
                 try:
                     page.goto(comment_url, wait_until="domcontentloaded", timeout=30000)
-                    page.wait_for_timeout(500) # Brief pause for rendering
+                    page.wait_for_timeout(500)
 
-                    # Selector for the specific comment element by its ID
-                    # Reddit comment elements usually have an ID like "t1_COMMENT_ID"
                     comment_selector = f"#t1_{comment_id_for_filename}"
                     
                     comment_element = page.locator(comment_selector).first
                     comment_element.wait_for(state="visible", timeout=10000)
                     
-                    # Optional: Scroll to the comment to ensure it's fully in view if needed
-                    # comment_element.scroll_into_view_if_needed()
-                    # page.wait_for_timeout(200) # pause after scroll
-
                     comment_element.screenshot(path=screenshot_path)
                     print_substep(f"Saved comment screenshot: {screenshot_path}", 1)
 
                 except Exception as e:
                     print_substep(f"Failed to screenshot comment {comment_id_for_filename}: {e}", style="bold red")
-                    # Fallback or skip this comment
-                    # Consider saving HTML for debugging:
-                    # html_content = page.content()
-                    # with open(f"assets/temp/{reddit_id}/failed_comment_{comment_id_for_filename}.html", "w", encoding="utf-8") as f:
-                    #     f.write(html_content)
-                    # print_substep(f"Saved HTML for failed comment {comment_id_for_filename}", style="yellow")
 
         print_substep("Closing Headless Browser.", style="green")
         browser.close()

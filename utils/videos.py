@@ -73,11 +73,9 @@ def save_data(subreddit: str, filename: str, reddit_title: str, reddit_id: str, 
                 loaded_data = json.load(raw_vids_read)
                 if isinstance(loaded_data, list):
                     done_vids = loaded_data
-                # If it's not a list (e.g. {} or corrupted), it will be overwritten as a list below
         except json.JSONDecodeError:
-            pass # Will be overwritten as a list below
+            pass
 
-    # Ensure done_vids is a list before proceeding with append logic
     if not isinstance(done_vids, list):
         done_vids = []
         print_substep("Warning: `videos.json` was invalid or empty, initialized as new list for saving.", style="bold yellow")
@@ -94,6 +92,5 @@ def save_data(subreddit: str, filename: str, reddit_title: str, reddit_id: str, 
     }
     done_vids.append(payload)
     
-    # Write the updated list back to the file
-    with open(videos_json_path, "w", encoding="utf-8") as raw_vids_write: # Open in write mode
+    with open(videos_json_path, "w", encoding="utf-8") as raw_vids_write:
         json.dump(done_vids, raw_vids_write, ensure_ascii=False, indent=4)

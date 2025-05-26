@@ -12,13 +12,19 @@ from utils.fonts import getheight, getsize
 def draw_multiple_line_text(
     image, text, font, text_color, padding, wrap=50, transparent=False
 ) -> None:
-    """
-    Draw multiline text over given image
-    """
     draw = ImageDraw.Draw(image)
     font_height = getheight(font, text)
     image_width, image_height = image.size
-    lines = textwrap.wrap(text, width=wrap)
+    text = textwrap.wrap(text, width=wrap)
+    lines = []
+    for i in text:
+        lines.append(i.strip())
+
+    if not lines: # Safeguard against empty lines list
+        print_substep("Warning: No lines to draw in imagemaker. Text might be empty or exclusively newlines.", style="yellow")
+        return # Avoid division by zero if there are no lines
+
+    font_height = getsize(font, " ")[1]
     y = (image_height / 2) - (((font_height + (len(lines) * padding) / len(lines)) * len(lines)) / 2)
     for line in lines:
         line_width, line_height = getsize(font, line)
@@ -54,9 +60,6 @@ def draw_multiple_line_text(
 
 
 def imagemaker(theme, reddit_obj: dict, txtclr, padding=5, transparent=False) -> None:
-    """
-    Render Images for video
-    """
     texts = reddit_obj["thread_post"]
     id = re.sub(r"[^\w\s-]", "", reddit_obj["thread_id"])
 

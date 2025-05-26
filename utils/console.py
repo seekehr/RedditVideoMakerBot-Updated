@@ -74,12 +74,10 @@ def handle_input(
                     if (nmin is not None and user_input < nmin) or (
                         nmax is not None and user_input > nmax
                     ):
-                        # FAILSTATE Input out of bounds
                         console.print("[red]" + oob_error)
                         continue
-                    break  # Successful type conversion and number in bounds
+                    break
                 except ValueError:
-                    # Type conversion failed
                     console.print("[red]" + err_message)
                     continue
             elif match != "" and re.match(match, user_input) is None:
@@ -88,13 +86,12 @@ def handle_input(
                     break
                 continue
             else:
-                # FAILSTATE Input STRING out of bounds
                 if (nmin is not None and len(user_input) < nmin) or (
                     nmax is not None and len(user_input) > nmax
                 ):
                     console.print("[red bold]" + oob_error)
                     continue
-                break  # SUCCESS Input STRING in bounds
+                break
         return user_input
     console.print(extra_info, no_wrap=True)
     while True:

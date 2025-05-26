@@ -57,7 +57,6 @@ class AWSPolly:
                 file = open(filepath, "wb")
                 file.write(response["AudioStream"].read())
                 file.close()
-                # print_substep(f"Saved Text {idx} to MP3 files successfully.", style="bold green")
 
             else:
                 # The response didn't contain audio data, exit gracefully
