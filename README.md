@@ -4,7 +4,7 @@
 - [x] **Added** filter for swear words (to accomadate for youtube shorts/tiktok/reels guidelines). Modify in `swear_words.json`
 - [x] **Added** support for `max_words_per_segment` to generate less text per moment to sync with AI voice 
 - [x] **Added** support for `read_first_comment_as_story` to generate a random comment inside a thread (most useful feature imo)
-- [x] **Added** `search_keywords` to allow searching threads/comments based on the keywords (REGARDLESS of if storymode is true)
+- [x] **Added** `search_keywords` to allow searching threads/comments based on the keywords (REGARDLESS of if storymode is true). PRAW BFS comment traversal is used for efficient keyword search
 - [x] **Added** `used_content.json` to ensure the same comment is not used everytime (if storymode is false)
 - [x] **Added** support for duplicate mp3s if the same thread is used for comments/video (useful if storymode is false)
 - [x] **Added** cleaner titles support by removing the text within [] brackets (many posts have, e.g, [ Serious ] in their title)
