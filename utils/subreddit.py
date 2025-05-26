@@ -33,6 +33,15 @@ def get_subreddit_undone(submissions: list, subreddit, times_checked=0, unsuitab
         if submission.stickied:
             print_substep("This post was pinned by moderators. Skipping...")
             continue
+        
+        # New check for max_comments_for_post
+        max_comments_setting = settings.config["reddit"]["thread"].get("max_comments_for_post", 0)
+        if max_comments_setting > 0 and submission.num_comments > max_comments_setting:
+            print_substep(f"Skipping post {submission.id}: Has {submission.num_comments} comments, exceeding max_comments_for_post ({max_comments_setting}).", style="yellow")
+            if unsuitable_thread_ids is not None: # Ensure list exists before appending
+                unsuitable_thread_ids.append(submission.id) 
+            continue
+            
         if (
             submission.num_comments <= int(settings.config["reddit"]["thread"]["min_comments"])
             and not settings.config["settings"]["storymode"]

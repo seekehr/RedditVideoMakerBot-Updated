@@ -75,6 +75,130 @@ def _save_unsuitable_thread_id(thread_id: str, data_path_dir: Path, unsuitable_i
 class PrawFallbackNeeded(Exception):
     pass
 
+def _is_praw_comment_suitable_for_read_story(comment_obj: praw.models.Comment, used_comment_ids: set, settings_config: dict) -> bool:
+    """Checks a PRAW Comment object for suitability for 'read_comment_as_story' mode."""
+    if comment_obj.stickied or comment_obj.body in ["[removed]", "[deleted]"]:
+        print_substep(f"Comment {comment_obj.id} skipped (PRAW suitability check): Stickied or body \'{comment_obj.body}\'.", style="dim")
+        return False
+
+    sanitised_body = sanitize_text(comment_obj.body)
+    if not sanitised_body or sanitised_body.strip() == "":
+        print_substep(f"Comment {comment_obj.id} skipped (PRAW suitability check): Empty after sanitization.", style="dim")
+        return False
+    
+    blocked_word = contains_swear_word(comment_obj.body)
+    if blocked_word:
+        print_substep(f"Comment {comment_obj.id} skipped (PRAW suitability check): Contains blocked word \'{blocked_word}\'.", style="yellow")
+        return False
+
+    min_len = int(settings_config["reddit"]["thread"]["min_comment_length"])
+    max_len = int(settings_config["reddit"]["thread"]["max_comment_length"])
+    actual_len = len(comment_obj.body)
+    if not (min_len <= actual_len <= max_len):
+        print_substep(f"Comment {comment_obj.id} skipped (PRAW suitability check): Length {actual_len} not in range ({min_len}-{max_len}).", style="dim")
+        return False
+    
+    author_name = getattr(comment_obj.author, 'name', None)
+    if author_name is None or comment_obj.id in used_comment_ids:
+        reason = "author is None" if author_name is None else f"ID {comment_obj.id} already used"
+        print_substep(f"Comment {comment_obj.id} skipped (PRAW suitability check): {reason}.", style="dim")
+        return False
+        
+    return True
+
+def _is_comment_dict_suitable_for_read_story(comment_dict: dict, used_comment_ids: set, settings_config: dict) -> bool:
+    """Checks a comment dictionary (from keyword search) for suitability."""
+    comment_body = comment_dict.get('body')
+    comment_id = comment_dict.get('id')
+    comment_author_name = comment_dict.get('author')
+    is_stickied = comment_dict.get('stickied', False)
+
+    if not comment_body or not comment_id:
+        print_substep(f"Comment dict (ID: {comment_id if comment_id else 'Unknown'}) skipped: Missing body or ID.", style="dim")
+        return False
+
+    if is_stickied or comment_body in ["[removed]", "[deleted]"]:
+        print_substep(f"Comment {comment_id} skipped (dict suitability check): Stickied or body \'{comment_body}\'.", style="dim")
+        return False
+
+    sanitised_body = sanitize_text(comment_body)
+    if not sanitised_body or sanitised_body.strip() == "":
+        print_substep(f"Comment {comment_id} skipped (dict suitability check): Empty after sanitization.", style="dim")
+        return False
+    
+    blocked_word = contains_swear_word(comment_body)
+    if blocked_word:
+        print_substep(f"Comment {comment_id} skipped (dict suitability check): Contains blocked word \'{blocked_word}\'.", style="yellow")
+        return False
+
+    min_len = int(settings_config["reddit"]["thread"]["min_comment_length"])
+    max_len = int(settings_config["reddit"]["thread"]["max_comment_length"])
+    actual_len = len(comment_body)
+    if not (min_len <= actual_len <= max_len):
+        print_substep(f"Comment {comment_id} skipped (dict suitability check): Length {actual_len} not in range ({min_len}-{max_len}).", style="dim")
+        return False
+    
+    if comment_author_name is None or comment_id in used_comment_ids:
+        reason = "author is None" if comment_author_name is None else f"ID {comment_id} already used"
+        print_substep(f"Comment {comment_id} skipped (dict suitability check): {reason}.", style="dim")
+        return False
+        
+    return True
+
+def _find_first_suitable_praw_comment_via_bfs(submission: praw.models.Submission, used_comment_ids: set, settings_config: dict) -> praw.models.Comment | None:
+    """Performs BFS on submission comments to find the first suitable PRAW comment for read_comment_as_story."""
+    MAX_COMMENTS_TO_SCAN = settings_config["reddit"]["thread"].get("max_comments_to_scan_for_keywords", 500)
+    MAX_TREE_NODES_TO_PROCESS = MAX_COMMENTS_TO_SCAN * 3 
+    
+    comments_actually_checked = 0
+    processed_tree_nodes = 0
+    
+    submission.comments.replace_more(limit=0) 
+    queue = deque(submission.comments)
+    
+    print_substep(f"Post {submission.id}: Starting BFS scan for a suitable comment (limit {MAX_COMMENTS_TO_SCAN} comments, {MAX_TREE_NODES_TO_PROCESS} tree items).", style="dim")
+
+    while queue and comments_actually_checked < MAX_COMMENTS_TO_SCAN and processed_tree_nodes < MAX_TREE_NODES_TO_PROCESS:
+        item = queue.popleft()
+        processed_tree_nodes += 1
+
+        if isinstance(item, praw.models.Comment):
+            comments_actually_checked += 1
+            if _is_praw_comment_suitable_for_read_story(item, used_comment_ids, settings_config):
+                print_substep(f"BFS scan: Found suitable PRAW comment {item.id} after checking {comments_actually_checked} comments.", style="green")
+                return item 
+
+            # If not suitable, add its replies to the queue
+            item.replies.replace_more(limit=0)
+            for reply in item.replies:
+                if processed_tree_nodes + len(queue) < MAX_TREE_NODES_TO_PROCESS:
+                    queue.append(reply)
+                else:
+                    break 
+        
+        elif isinstance(item, praw.models.MoreComments):
+            try:
+                more_comments_from_node = item.comments()
+                for child_item in more_comments_from_node:
+                    if processed_tree_nodes + len(queue) < MAX_TREE_NODES_TO_PROCESS:
+                        queue.append(child_item)
+                    else:
+                        break
+            except Exception as e_bfs_scan_more:
+                print_substep(f"BFS scan (MoreComments): Error loading children for {item.id if item.id else 'N/A'}: {e_bfs_scan_more}", style="yellow")
+
+        if processed_tree_nodes > 0 and processed_tree_nodes % 200 == 0 : # Adjusted logging frequency
+            print_substep(f"BFS scan: Processed {processed_tree_nodes} tree items, checked {comments_actually_checked} comments for suitability...", style="dim")
+
+    if comments_actually_checked >= MAX_COMMENTS_TO_SCAN :
+        print_substep(f"BFS scan: Reached limit of {MAX_COMMENTS_TO_SCAN} comments checked for suitability.", style="yellow")
+    elif processed_tree_nodes >= MAX_TREE_NODES_TO_PROCESS:
+         print_substep(f"BFS scan: Reached limit of {MAX_TREE_NODES_TO_PROCESS} tree nodes processed.", style="yellow")
+    else:
+        print_substep(f"BFS scan: Finished. No suitable comment found after checking {comments_actually_checked} comments (processed {processed_tree_nodes} tree items).", style="dim")
+        
+    return None
+
 def get_subreddit_threads(POST_ID: str):
     """
     Returns a list of threads from the AskReddit subreddit.
@@ -211,7 +335,7 @@ def get_subreddit_threads(POST_ID: str):
                             keyword_found_in_post = True
                             break
                     if not keyword_found_in_post:
-                        print_substep(f"Post skipped (storymode): Keywords not found in title or selftext. ID: {submission.id}", style="yellow")
+                        print_substep(f"Skipping post {submission.id} (storymode): Keywords '{', '.join(search_keywords)}' not found in title or selftext.", style="yellow")
                         _save_unsuitable_thread_id(submission.id, data_dir, unsuitable_thread_ids)
                         submission = None # Mark for retry / skip
                         # Potentially refresh 'threads' or fetch new ones if all keyword-based results are exhausted by this check.
@@ -325,6 +449,12 @@ def get_subreddit_threads(POST_ID: str):
     print_substep(f"Thread has a upvote ratio of {ratio}%", style="bold blue")
     print_substep(f"Thread has {num_comments} comments", style="bold blue")
 
+    search_keywords = settings.config["reddit"]["thread"].get("search_keywords")
+    if search_keywords:
+        found_keywords_in_title = [kw for kw in search_keywords if kw.lower() in submission.title.lower()]
+        if found_keywords_in_title:
+            print_substep(f"Post title contains keyword(s): {', '.join(found_keywords_in_title)}", style="bold cyan")
+
     content["thread_url"] = threadurl
     content["thread_title"] = cleaned_title # Use the cleaned title
     content["thread_id"] = submission.id # current_thread_id is the same
@@ -345,166 +475,126 @@ def get_subreddit_threads(POST_ID: str):
     else: # Not storymode - This is where comment processing logic begins
         first_suitable_comment_processed = False
         
-        # Determine if a keyword search was performed on comments because keywords were NOT in the title
         search_keywords = settings.config["reddit"]["thread"].get("search_keywords")
         performing_keyword_comment_search = False
-        keyword_matched_comments_list = []
+        keyword_matched_comments_list = [] # List of dicts from PRAW BFS keyword search
 
         if (search_keywords and
                 settings.config["settings"]["read_comment_as_story"] and
                 not any(keyword.lower() in submission.title.lower() for keyword in search_keywords)):
             
             performing_keyword_comment_search = True
-            trigger_praw_fallback = False # Initialize here
-            print_substep(f"Post title of '{submission.id}' does not contain keywords. Searching its comments for: {search_keywords} using PRAW.", style="cyan")
+            # This block is for when keywords are NOT in title, and we search comments FOR keywords
+            print_substep(f"Post title of \'{submission.id}\' does not contain keywords. Searching its comments for: {search_keywords} using PRAW BFS.", style="cyan")
             
-            MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS = settings.config["reddit"]["thread"].get("max_comments_to_scan_for_keywords", 500) # Get from config or default
+            MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS = settings.config["reddit"]["thread"].get("max_comments_to_scan_for_keywords", 500)
+            MAX_TREE_NODES_TO_PROCESS = MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS * 3
+            temp_comments_to_check_praw = [] # PRAW objects collected by BFS
+            processed_tree_nodes = 0
             
-            keyword_matched_comments_list = [] # This will store comment-like dicts
+            submission.comments.replace_more(limit=0)
+            queue = deque(submission.comments)
+            print_substep(f"Starting PRAW BFS for keyword search in post \'{submission.id}\' (scan up to {MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS} comments, process up to {MAX_TREE_NODES_TO_PROCESS} tree items).", style="dim")
+            
+            comments_collected_by_bfs = 0
+            while queue and comments_collected_by_bfs < MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS and processed_tree_nodes < MAX_TREE_NODES_TO_PROCESS:
+                item = queue.popleft()
+                processed_tree_nodes += 1
+                if isinstance(item, praw.models.Comment):
+                    temp_comments_to_check_praw.append(item)
+                    comments_collected_by_bfs +=1
+                    # Add replies to queue
+                    item.replies.replace_more(limit=0)
+                    for reply in item.replies:
+                        if processed_tree_nodes + len(queue) < MAX_TREE_NODES_TO_PROCESS: queue.append(reply)
+                        else: break
+                elif isinstance(item, praw.models.MoreComments):
+                    try:
+                        more = item.comments()
+                        for child_item in more: 
+                            if processed_tree_nodes + len(queue) < MAX_TREE_NODES_TO_PROCESS: queue.append(child_item)
+                            else: break
+                    except Exception as e_bfs:
+                        print_substep(f"PRAW BFS (keyword search): Error loading MoreComments (id: {item.id if item.id else 'N/A'}): {e_bfs}", style="yellow")
+                if processed_tree_nodes > 0 and processed_tree_nodes % 200 == 0: print_substep(f"PRAW BFS (keyword search): Processed {processed_tree_nodes} tree items, collected {len(temp_comments_to_check_praw)} comments...", style="dim")
+            
+            if comments_collected_by_bfs >= MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS : print_substep(f"PRAW BFS (keyword search): Reached collection limit of {MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS} comments.", style="yellow")    
+            elif processed_tree_nodes >= MAX_TREE_NODES_TO_PROCESS: print_substep(f"PRAW BFS (keyword search): Reached tree processing limit. Collected {len(temp_comments_to_check_praw)} comments.", style="yellow")
+            print_substep(f"PRAW BFS (keyword search): Finished. Collected {len(temp_comments_to_check_praw)} comments (processed {processed_tree_nodes} tree items). Filtering by keyword...", style="dim")
 
-            # Force PRAW fallback
-            trigger_praw_fallback = True
+            for comment_object in temp_comments_to_check_praw:
+                comment_body_text = getattr(comment_object, 'body', None)
+                if comment_body_text and isinstance(comment_body_text, str):
+                    if any(keyword.lower() in comment_body_text.lower() for keyword in search_keywords):
+                        keyword_matched_comments_list.append({
+                            'body': comment_object.body,
+                            'id': comment_object.id,
+                            'permalink': f"https://www.reddit.com{comment_object.permalink}",
+                            'author': getattr(comment_object.author, 'name', None),
+                            'stickied': comment_object.stickied
+                        })
             
-            if trigger_praw_fallback:
-                print_substep("Using PRAW BFS comment traversal for keyword search.", style="yellow")
-                # --- Fallback PRAW BFS Logic (copied and adapted from previous version) ---
-                MAX_TREE_NODES_TO_PROCESS = MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS * 3
-                temp_comments_to_check_praw = []
-                processed_tree_nodes = 0
-                submission.comments.replace_more(limit=0)
-                queue = deque(submission.comments)
-                print_substep(f"Starting FALLBACK PRAW BFS for post '{submission.id}' (scan up to {MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS} comments, process up to {MAX_TREE_NODES_TO_PROCESS} tree items).", style="dim")
-                while queue and len(temp_comments_to_check_praw) < MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS and processed_tree_nodes < MAX_TREE_NODES_TO_PROCESS:
-                    item = queue.popleft()
-                    processed_tree_nodes += 1
-                    if isinstance(item, praw.models.Comment):
-                        temp_comments_to_check_praw.append(item)
-                        if len(temp_comments_to_check_praw) < MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS:
-                            item.replies.replace_more(limit=0)
-                            for reply in item.replies:
-                                if processed_tree_nodes + len(queue) < MAX_TREE_NODES_TO_PROCESS: queue.append(reply)
-                                else: break
-                    elif isinstance(item, praw.models.MoreComments):
-                        if len(temp_comments_to_check_praw) < MAX_COMMENTS_TO_SCAN_FOR_KEYWORDS:
-                            try:
-                                more = item.comments()
-                                for child_item in more: 
-                                    if processed_tree_nodes + len(queue) < MAX_TREE_NODES_TO_PROCESS: queue.append(child_item)
-                                    else: break
-                                if not more: print_substep(f"Fallback BFS: MoreComments node (id: {item.id if item.id else 'N/A'}) yielded no new comments.", style="dim")
-                            except Exception as e_bfs:
-                                print_substep(f"Fallback BFS: Error loading MoreComments (id: {item.id if item.id else 'N/A'}): {e_bfs}", style="yellow")
-                    if processed_tree_nodes % 100 == 0: print_substep(f"Fallback BFS: Processed {processed_tree_nodes} tree items, collected {len(temp_comments_to_check_praw)} comments...", style="dim")
-                if processed_tree_nodes >= MAX_TREE_NODES_TO_PROCESS: print_substep(f"Fallback BFS: Reached processing limit. Collected {len(temp_comments_to_check_praw)} comments.", style="yellow")
-                print_substep(f"Fallback BFS: Finished collection. Collected {len(temp_comments_to_check_praw)} comments (processed {processed_tree_nodes} tree items).", style="dim")
-                # Filter collected PRAW comments by keyword
-                for comment_object in temp_comments_to_check_praw:
-                    comment_body_text = getattr(comment_object, 'body', None)
-                    if comment_body_text and isinstance(comment_body_text, str):
-                        if any(keyword.lower() in comment_body_text.lower() for keyword in search_keywords):
-                            # If PRAW object, append directly if compatible, or adapt its fields to the dict structure
-                            keyword_matched_comments_list.append({
-                                'body': comment_object.body,
-                                'id': comment_object.id,
-                                'permalink': f"https://www.reddit.com{comment_object.permalink}",
-                                'author': getattr(comment_object.author, 'name', None), # PRAW author is an object
-                                'stickied': comment_object.stickied # include fields expected by later processing
-                            })
-                # --- End of Fallback PRAW BFS Logic ---
-
             if not keyword_matched_comments_list:
-                print_substep(f"No comments found matching keywords for post '{submission.id}' (after Pushshift attempt and potential PRAW fallback). Marking as unsuitable.", style="yellow")
+                print_substep(f"Skipping post \'{submission.id}\': No comments found matching keywords using PRAW BFS.", style="yellow")
                 _save_unsuitable_thread_id(current_thread_id, data_dir, unsuitable_thread_ids)
                 return None
-            
-            print_substep(f"Found {len(keyword_matched_comments_list)} comments matching keywords for post '{submission.id}'. Processing these for 'read_comment_as_story'.", style="cyan")
+            print_substep(f"Found {len(keyword_matched_comments_list)} comments matching keywords for post \'{submission.id}\'. Processing these for \'read_comment_as_story\'.", style="cyan")
 
-        # Now, process comments based on the mode
+        # Now, process comments based on the mode for read_comment_as_story
         if settings.config["settings"]["read_comment_as_story"]:
-            comments_to_iterate = [] # This will now be a list of dicts if from Pushshift, or PRAW objects if from PRAW BFS fallback.
+            suitable_comment_for_story = None 
+
             if performing_keyword_comment_search:
-                comments_to_iterate = keyword_matched_comments_list # This list is populated by Pushshift or PRAW BFS
-            else: 
-                # Standard PRAW comment fetching if not performing_keyword_comment_search for read_comment_as_story
-                # This path is taken if keywords WERE in title, or no keywords used for the post.
-                # We need to ensure submission.comments are loaded and iterable PRAW Comment objects.
-                submission.comments.replace_more(limit=None) # Load all comments and their replies for non-keyword search
-                comments_to_iterate = submission.comments.list() 
+                # keyword_matched_comments_list has dicts. Find first suitable among them.
+                for comment_dict_candidate in keyword_matched_comments_list:
+                    if _is_comment_dict_suitable_for_read_story(comment_dict_candidate, used_comment_ids_for_this_thread, settings.config):
+                        suitable_comment_for_story = comment_dict_candidate
+                        break 
+            else:
+                # Keywords ARE in title (or no keywords for post).
+                # Use BFS to find the first suitable PRAW comment object.
+                suitable_comment_for_story = _find_first_suitable_praw_comment_via_bfs(
+                    submission,
+                    used_comment_ids_for_this_thread,
+                    settings.config
+                )
 
-            for comment_data in comments_to_iterate: # comment_data can be a dict (Pushshift) or PRAW Comment object
-                # Adapt access to comment attributes based on its type
-                comment_body = None
-                comment_id = None
-                comment_permalink = None
-                comment_author_name = None
-                is_stickied = False # Default for Pushshift dicts unless explicitly mapped
+            if suitable_comment_for_story:
+                final_comment_body = None
+                final_comment_id = None
+                final_comment_permalink = None
 
-                if isinstance(comment_data, praw.models.Comment):
-                    if comment_data.body in ["[removed]", "[deleted]"] or comment_data.stickied:
-                        continue
-                    comment_body = comment_data.body
-                    comment_id = comment_data.id
-                    comment_permalink = f"https://www.reddit.com{comment_data.permalink}"
-                    comment_author_name = getattr(comment_data.author, 'name', None)
-                    is_stickied = comment_data.stickied # Already checked above, but good for consistency
-                elif isinstance(comment_data, dict): # From Pushshift (or PRAW fallback adapted to dict)
-                    comment_body = comment_data.get('body')
-                    comment_id = comment_data.get('id')
-                    comment_permalink = comment_data.get('permalink')
-                    comment_author_name = comment_data.get('author')
-                    is_stickied = comment_data.get('stickied', False) # Pushshift data might not always have 'stickied'
-                    if comment_body in ["[removed]", "[deleted]"] or is_stickied:
-                        continue
-                elif isinstance(comment_data, MoreComments): # Should be filtered by PRAW .list() or Pushshift doesn't return these
-                    continue 
-                else: # Should not happen
-                    print_substep(f"Skipping unknown item type in comments_to_iterate: {type(comment_data)}", style="yellow")
-                    continue
+                if isinstance(suitable_comment_for_story, praw.models.Comment): # From BFS scan
+                    final_comment_body = suitable_comment_for_story.body
+                    final_comment_id = suitable_comment_for_story.id
+                    final_comment_permalink = f"https://www.reddit.com{suitable_comment_for_story.permalink}"
+                elif isinstance(suitable_comment_for_story, dict): # From keyword-matched list
+                    final_comment_body = suitable_comment_for_story.get('body')
+                    final_comment_id = suitable_comment_for_story.get('id')
+                    final_comment_permalink = suitable_comment_for_story.get('permalink')
                 
-                if not comment_body or not comment_id: # Basic check for valid comment data
-                    continue
-
-                sanitised_body = sanitize_text(comment_body)
-                blocked_word = contains_swear_word(comment_body)
-
-                if blocked_word:
-                    print_substep(f"Comment {comment_id} skipped (read_comment_as_story): Contains a blocked word ('{blocked_word}').", style="yellow")
-                    continue
-                if not sanitised_body or sanitised_body == " ":
-                    continue
-                
-                if not (int(settings.config["reddit"]["thread"]["min_comment_length"]) <= len(comment_body) <= int(settings.config["reddit"]["thread"]["max_comment_length"])):
-                    continue
-                # Author check: PRAW author is an object, Pushshift author is a string (name)
-                if comment_author_name is None or comment_id in used_comment_ids_for_this_thread:
-                    continue
-
-                content["comments"].append({
-                    "comment_body": comment_body,
-                    "comment_url": comment_permalink, # Ensure this is a full URL
-                    "comment_id": comment_id,
-                })
-                first_suitable_comment_processed = True
-                print_substep(f"Selected comment {comment_id} for 'read_comment_as_story'.", style="green")
-                
-                # Populate thread_post and audio_segments for read_comment_as_story mode
-                if content["comments"]: # Should always be true if first_suitable_comment_processed is true
-                    selected_comment_text = content["comments"][0]["comment_body"]
+                if final_comment_body and final_comment_id: # Ensure we have critical info
+                    content["comments"].append({
+                        "comment_body": final_comment_body,
+                        "comment_url": final_comment_permalink,
+                        "comment_id": final_comment_id,
+                    })
+                    first_suitable_comment_processed = True
+                    print_substep(f"Selected comment {final_comment_id} for \'read_comment_as_story\'.", style="green")
                     
-                    # Parse the selected comment into sentences and visual chunks
-                    parsed_comment_data = posttextparser(selected_comment_text)
-                    
-                    content["parsed_story_content"] = parsed_comment_data # Used by final_video for visual timing
-                    content["thread_post"] = [chunk for item in parsed_comment_data for chunk in item["visual_chunks"]] # Flat list of visual chunks for imagemaker
-                    content["audio_segments"] = [item["audio_text"] for item in parsed_comment_data] # List of audio sentences for TTSEngine
+                    parsed_comment_data = posttextparser(final_comment_body)
+                    content["parsed_story_content"] = parsed_comment_data
+                    content["thread_post"] = [chunk for item in parsed_comment_data for chunk in item["visual_chunks"]]
+                    content["audio_segments"] = [item["audio_text"] for item in parsed_comment_data]
+                else:
+                    print_substep(f"Failed to extract details from suitable_comment_for_story. Type: {type(suitable_comment_for_story)}", style="bold red")
 
-                break # Found one suitable comment
 
             if not first_suitable_comment_processed:
                 if performing_keyword_comment_search:
-                    print_substep(f"Found {len(keyword_matched_comments_list)} keyword-matching comments, but none were suitable for 'read_comment_as_story'. Marking post unsuitable.", style="yellow")
-                else:
-                    print_substep(f"No suitable comment found in post '{submission.id}' for 'read_comment_as_story' after checking all comments. Marking as unsuitable.", style="yellow")
+                    print_substep(f"Skipping post \'{submission.id}\': {len(keyword_matched_comments_list)} keyword-matching comments found, but none were suitable for \'read_comment_as_story\'.", style="yellow")
+                else: # Keyword in title or no keywords for post, BFS scan path
+                    print_substep(f"Skipping post \'{submission.id}\': No suitable comment found for \'read_comment_as_story\' after BFS scan.", style="yellow")
                 _save_unsuitable_thread_id(current_thread_id, data_dir, unsuitable_thread_ids)
                 return None
         
@@ -521,6 +611,7 @@ def get_subreddit_threads(POST_ID: str):
                 if isinstance(comment, MoreComments):
                     continue
                 if comment.body in ["[removed]", "[deleted]"] or comment.stickied:
+                    print_substep(f"Comment {comment.id} skipped: Body is '{comment.body}' or comment is stickied.", style="dim")
                     continue
 
                 sanitised_body = sanitize_text(comment.body)
@@ -529,11 +620,18 @@ def get_subreddit_threads(POST_ID: str):
                     print_substep(f"Comment skipped (standard): Contains a blocked word ('{blocked_word}'). ID: {comment.id}", style="yellow")
                     continue
                 if not sanitised_body or sanitised_body == " ":
+                    print_substep(f"Comment {comment.id} skipped: Empty after sanitization.", style="dim")
                     continue
 
-                if not (int(settings.config["reddit"]["thread"]["min_comment_length"]) <= len(comment.body) <= int(settings.config["reddit"]["thread"]["max_comment_length"])):
+                min_len = int(settings.config["reddit"]["thread"]["min_comment_length"])
+                max_len = int(settings.config["reddit"]["thread"]["max_comment_length"])
+                actual_len = len(comment.body)
+                if not (min_len <= actual_len <= max_len):
+                    print_substep(f"Comment {comment.id} skipped: Length {actual_len} is outside range ({min_len}-{max_len}).", style="dim")
                     continue
                 if comment.author is None or comment.id in used_comment_ids_for_this_thread:
+                    reason = "author is None" if comment.author is None else f"comment ID {comment.id} already used"
+                    print_substep(f"Comment {comment.id} skipped: {reason}.", style="dim")
                     continue
                 
                 content["comments"].append({
