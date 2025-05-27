@@ -120,7 +120,6 @@ celerybeat.pid
 *.sage.py
 
 # Environments
-.env
 .venv
 env/
 venv/
@@ -233,7 +232,6 @@ fabric.properties
 
 assets/temp
 assets/backgrounds
-/.vscode
 out
 .DS_Store
 .setup-done-before
@@ -243,7 +241,10 @@ reddit-bot-351418-5560ebc49cac.json
 *.pyc
 video_creation/data/videos.json
 video_creation/data/envvars.txt
-video_creation/data/used_content.json
+video_creation/data/used_comments.json
+video_creation/data/unsuitable_threads.json
 config.toml
 *.exe
 logs.txt
+config.bat
+node_modules
