@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import utils.session
 import math
 import sys
 import time
